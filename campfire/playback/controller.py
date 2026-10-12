@@ -7,6 +7,7 @@ The displayed state is derived from what mpv reports, not from what we asked for
 
 from __future__ import annotations
 
+import random
 from enum import Enum
 from typing import Callable, Protocol
 
@@ -15,6 +16,7 @@ from .mpv import BackendError
 from .queue import PlayQueue
 
 MAX_CONSECUTIVE_FAILURES = 3
+REPEAT_MODES = ("off", "all", "one")  # all = the whole queue, one = the current track
 
 
 class Backend(Protocol):
@@ -45,7 +47,8 @@ Notify = Callable[[str, str], None]  # (level: "info" | "warning" | "error", mes
 
 class PlaybackController:
     def __init__(self, backend: Backend, stream_url: Callable[[Track], str], notify: Notify,
-                 seek_seconds: int = 10, previous_restart_seconds: float = 3.0, volume: int = 80):
+                 seek_seconds: int = 10, previous_restart_seconds: float = 3.0, volume: int = 80,
+                 repeat: str = "off", shuffle: bool = False, rng: random.Random | None = None):
         self.backend = backend
         self.stream_url = stream_url
         self.notify = notify
@@ -64,6 +67,12 @@ class PlaybackController:
         self._entry_id: int | None = None   # mpv playlist entry of the current file
         self._replaced_id: int | None = None  # entry being replaced by a new load
         self._failures = 0
+        self.repeat = repeat if repeat in REPEAT_MODES else "off"
+        # Shuffle mode: upcoming tracks play in random order. _original is the
+        # queue's order before shuffling, restored when the mode is turned off.
+        self.shuffle = shuffle
+        self._original: list[Track] = []
+        self._rng = rng or random.Random()
 
     # -- State -------------------------------------------------------------------
 
@@ -92,12 +101,50 @@ class PlaybackController:
 
     # -- Commands ----------------------------------------------------------------
 
-    def play(self, tracks: list[Track], start: int = 0) -> None:
+    def play(self, tracks: list[Track], start: int = 0, shuffle: bool | None = None,
+             chosen: bool = False) -> None:
+        """Replace the queue and start playing.
+
+        shuffle: True/False also switches shuffle mode; None keeps the current mode.
+        chosen: `start` is a track the user picked, so it plays first even when shuffling.
+        """
         if not tracks:
             self.notify("warning", "Nothing to play.")
             return
+        if shuffle is not None:
+            self.shuffle = shuffle
+        self._original = list(tracks)
+        order = list(tracks)
+        if self.shuffle:
+            first = order.pop(start) if chosen and 0 <= start < len(order) else None
+            self._rng.shuffle(order)
+            if first is not None:
+                order.insert(0, first)
+            start = 0
         self._failures = 0
-        self._start(self.queue.set(tracks, start))
+        self._start(self.queue.set(order, start))
+
+    def toggle_shuffle(self) -> None:
+        """Switch shuffle mode without interrupting the current track."""
+        q = self.queue
+        self.shuffle = not self.shuffle
+        if self.shuffle:
+            self._original = list(q.tracks)
+            q.shuffle_upcoming(self._rng)
+            self.notify("info", "Shuffle on: upcoming tracks play in random order.")
+            return
+        current = q.current
+        index = next((i for i, t in enumerate(self._original) if t is current), None)
+        if index is not None and len(self._original) == len(q.tracks):
+            q.tracks, q.index = list(self._original), index
+        self.notify("info", "Shuffle off: the queue is back in its original order.")
+
+    def cycle_repeat(self) -> None:
+        self.repeat = REPEAT_MODES[(REPEAT_MODES.index(self.repeat) + 1) % len(REPEAT_MODES)]
+        self.notify("info", {"off": "Repeat off.", "all": "Repeat all: the queue starts over at the end.",
+                             "one": "Repeat one: the current track plays again."}[self.repeat])
+
+
 
     def jump(self, index: int) -> None:
         self._failures = 0
@@ -121,6 +168,10 @@ class PlaybackController:
     def next(self) -> None:
         track = self.queue.next()
         if track is None:
+            if self.repeat == "all" and len(self.queue):
+                self._failures = 0
+                self._wrap()
+                return
             self.notify("info", "End of queue.")
             return
         self._failures = 0
@@ -240,7 +291,10 @@ class PlaybackController:
         reason = msg.get("reason")
         if reason == "eof":
             self._failures = 0
-            self._advance_or_finish()
+            if self.repeat == "one":
+                self._start(self.current)
+            else:
+                self._advance_or_finish()
         elif reason == "error":
             if self.backend.visualizer and self.current is not None:
                 # The analysis filter can make mpv reject a file (e.g. an unusual
@@ -262,8 +316,22 @@ class PlaybackController:
 
     def _advance_or_finish(self) -> None:
         track = self.queue.next()
-        if track is None:
+        if track is not None:
+            self._start(track)
+        elif self.repeat == "all":
+            self._wrap()
+        else:
             self._stopped, self._loading = True, False
             self.position = None
+
+    def _wrap(self) -> None:
+        """Start the queue over (repeat all); a shuffled queue gets a new order."""
+        if self.shuffle and len(self.queue) > 1:
+            last = self.current
+            tracks = list(self.queue.tracks)
+            self._rng.shuffle(tracks)
+            if tracks[0] is last:  # don't play the same track twice in a row
+                tracks[0], tracks[-1] = tracks[-1], tracks[0]
+            self._start(self.queue.set(tracks, 0))
         else:
-            self._start(track)
+            self._start(self.queue.jump(0))

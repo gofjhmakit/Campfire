@@ -241,6 +241,113 @@ class ControllerTests(unittest.TestCase):
         self.event(event="property-change", name="duration", data=None)
         self.assertEqual(self.c.duration, 200.5)
 
+    def end(self, entry, reason="eof"):
+        self.event(event="start-file", playlist_entry_id=entry)
+        self.event(event="end-file", reason=reason, playlist_entry_id=entry, file_error="x")
+
+    def test_repeat_cycles_off_all_one(self):
+        self.assertEqual(self.c.repeat, "off")
+        for expected in ("all", "one", "off"):
+            self.c.cycle_repeat()
+            self.assertEqual(self.c.repeat, expected)
+
+    def test_repeat_one_replays_the_track(self):
+        self.c.repeat = "one"
+        self.c.play(TRACKS, 1)
+        self.end(1)
+        self.assertEqual(self.c.current, TRACKS[1])
+        self.assertEqual(self.loads(), [f"url:{TRACKS[1].id}"] * 2)
+        self.c.next()                                   # manual next still moves on
+        self.assertEqual(self.c.current, TRACKS[2])
+
+    def test_repeat_one_does_not_retry_a_failing_track_forever(self):
+        self.c.repeat = "one"
+        self.c.play(TRACKS)
+        self.end(1, "error")
+        self.assertEqual(self.c.current, TRACKS[1])     # skipped like without repeat
+
+    def test_repeat_all_wraps_at_the_end(self):
+        self.c.repeat = "all"
+        self.c.play(TRACKS, 3)
+        self.end(1)
+        self.assertEqual(self.c.current, TRACKS[0])
+        self.assertNotEqual(self.c.status, Status.STOPPED)
+        self.c.jump(3)
+        self.c.next()                                   # manual next at the end wraps too
+        self.assertEqual(self.c.current, TRACKS[0])
+
+    def test_repeat_off_stops_at_the_end(self):
+        self.c.play(TRACKS, 3)
+        self.end(1)
+        self.assertEqual(self.c.status, Status.STOPPED)
+
+    def shuffle_controller(self, n=12, seed=3):
+        import random
+        self.many = tracks(album(2), n)
+        return PlaybackController(self.backend, lambda t: f"url:{t.id}",
+                                  lambda level, msg: self.notices.append((level, msg)),
+                                  rng=random.Random(seed))
+
+    def test_toggling_shuffle_never_interrupts_the_current_track(self):
+        c = self.shuffle_controller()
+        c.play(self.many, start=3)
+        loads_before = list(self.backend.calls)
+        c.toggle_shuffle()
+        self.assertTrue(c.shuffle)
+        self.assertEqual(self.backend.calls, loads_before)        # no load, no seek, no stop
+        self.assertEqual(c.current, self.many[3])
+        self.assertEqual(c.queue.tracks[:4], self.many[:4])       # history and current untouched
+        self.assertEqual(sorted(t.id for t in c.queue.upcoming()), sorted(t.id for t in self.many[4:]))
+        self.assertNotEqual(c.queue.upcoming(), self.many[4:])
+        c.toggle_shuffle()                                        # off: original order back
+        self.assertFalse(c.shuffle)
+        self.assertEqual(self.backend.calls, loads_before)
+        self.assertEqual(c.queue.tracks, self.many)
+        self.assertEqual(c.current, self.many[3])
+        self.assertEqual(c.queue.upcoming(), self.many[4:])
+
+    def test_shuffle_off_after_moving_on_keeps_playing_track(self):
+        c = self.shuffle_controller()
+        c.play(self.many, start=0)
+        c.toggle_shuffle()
+        c.next()
+        now = c.current
+        c.toggle_shuffle()
+        self.assertIs(c.current, now)
+        self.assertEqual(c.queue.tracks, self.many)
+        self.assertEqual(c.queue.upcoming(), self.many[self.many.index(now) + 1:])
+
+    def test_play_respects_shuffle_mode(self):
+        c = self.shuffle_controller()
+        c.toggle_shuffle()
+        c.play(self.many, start=5, chosen=True)                  # a picked track plays first
+        self.assertEqual(c.current, self.many[5])
+        self.assertEqual(c.queue.index, 0)
+        self.assertEqual(sorted(t.id for t in c.queue.tracks), sorted(t.id for t in self.many))
+        self.assertNotEqual(c.queue.tracks[1:], [t for t in self.many if t is not self.many[5]])
+        c.play(self.many, shuffle=False)                         # explicit in-order play
+        self.assertFalse(c.shuffle)
+        self.assertEqual(c.queue.tracks, self.many)
+
+    def test_explicit_shuffle_play_turns_mode_on(self):
+        c = self.shuffle_controller()
+        c.play(self.many, shuffle=True)
+        self.assertTrue(c.shuffle)
+        self.assertEqual(c.queue.index, 0)
+        self.assertNotEqual(c.queue.tracks, self.many)
+
+    def test_repeat_all_reshuffles_each_pass(self):
+        c = self.shuffle_controller()
+        c.play(self.many, shuffle=True)
+        first_order = list(c.queue.tracks)
+        c.repeat = "all"
+        c.jump(len(self.many) - 1)
+        last = c.current
+        c.next()
+        self.assertNotEqual(c.queue.tracks, first_order)          # a new order each time around
+        self.assertIsNot(c.current, last)                         # never the same track twice in a row
+        self.assertEqual(len(c.queue), len(self.many))
+
     def test_analysis_only_while_playing(self):
         self.assertIsNone(self.c.analysis())
         self.c.play(TRACKS)

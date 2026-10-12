@@ -125,7 +125,7 @@ class App:
             self.backend, lambda track: self.client.stream_url(track.id), self.notify,
             seek_seconds=settings.seek_seconds,
             previous_restart_seconds=settings.previous_restart_seconds,
-            volume=settings.volume)
+            volume=settings.volume, repeat=settings.repeat, shuffle=settings.shuffle)
         for warning in startup_warnings or []:
             self.notify("warning", warning)
 
@@ -306,16 +306,24 @@ class App:
 
     # -- Playback actions -------------------------------------------------------------------
 
-    def play_album(self, album_id: str, start_track_id: str | None = None) -> None:
+    def play_album(self, album_id: str, start_track_id: str | None = None,
+                   shuffle: bool | None = None) -> None:
         tracks = self.library.tracks_of(album_id)
         if tracks is None:
             self.request_album(album_id)
             self.notify("info", "Loading album tracks… try again in a moment.")
             return
         start = next((i for i, t in enumerate(tracks) if t.id == start_track_id), 0)
-        self.player.play(tracks, start)
+        self.player.play(tracks, start, shuffle=shuffle, chosen=start_track_id is not None)
 
-    def play_artist(self, key: str) -> None:
+    def play_all(self, shuffle: bool | None = True) -> None:
+        """Every loaded track in the collection."""
+        tracks = self.library.all_tracks()
+        if self.sync.running:
+            self.notify("info", "The library is still loading; using the tracks loaded so far.")
+        self.player.play(tracks, shuffle=shuffle)
+
+    def play_artist(self, key: str, shuffle: bool | None = None) -> None:
         artist = self.library.artist(key)
         if not artist:
             return
@@ -325,7 +333,7 @@ class App:
         tracks = self.library.artist_tracks(key)
         if missing:
             self.notify("info", f"{len(missing)} album(s) still loading; playing what is available.")
-        self.player.play(tracks)
+        self.player.play(tracks, shuffle=shuffle)
 
     def play_tracks(self, tracks: list[Track], start: int = 0) -> None:
         self.player.play(tracks, start)

@@ -31,12 +31,12 @@ class KeymapTests(unittest.TestCase):
                 parse_key(bad)
 
     def test_user_bindings_replace_defaults(self):
-        km = Keymap({"artists": "a", "albums": ["l", "f2"], "next": "N"})
+        km = Keymap({"artists": "a", "albums": ["b", "f2"], "next": "N"})
         self.assertEqual(km.warnings, [])
         self.assertEqual(km.action("a"), "artists")
         self.assertIsNone(km.action("1"))           # old default no longer bound
         self.assertEqual(km.action(curses.KEY_F2), "albums")
-        self.assertEqual(km.label("albums"), "l")
+        self.assertEqual(km.label("albums"), "b")
         self.assertEqual(km.action("N"), "next")
         self.assertIsNone(km.action("n"))
 

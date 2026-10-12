@@ -34,8 +34,10 @@ GRAPHICS_TERMS = ("xterm-kitty", "xterm-ghostty")
 
 
 def _tmux(fmt: str) -> str:
+    # Ask about the pane Campfire runs in (and the client showing it).
+    target = ["-t", os.environ["TMUX_PANE"]] if os.environ.get("TMUX_PANE") else []
     try:
-        return subprocess.run(["tmux", "display-message", "-p", fmt], capture_output=True,
+        return subprocess.run(["tmux", "display-message", *target, "-p", fmt], capture_output=True,
                               text=True, timeout=2).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""

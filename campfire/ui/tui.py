@@ -20,7 +20,7 @@ from . import text as tx
 from . import graphics
 from .colors import Palette
 from .keys import Keymap
-from .views import (AlbumsView, AlbumView, ArtistsView, NowPlayingView, QueueView, Row,
+from .views import (AlbumsView, AlbumView, ArtistsView, ArtistView, NowPlayingView, QueueView, Row,
                     SearchView, TracksView, View)
 from .visuals import (METER_FLOOR_DB, Dynamics, block_rows, draw_meter, draw_spectrum,
                       normalize)
@@ -58,7 +58,9 @@ HELP = [
     ("Playback", [(("play_pause",), "Play / pause"), (("seek_back", "seek_forward"), "Seek back / forward"),
                   (("next", "previous"), "Next / previous track"), (("stop",), "Stop"),
                   (("volume_up", "volume_down"), "Volume up / down"),
-                  (("goto_playing",), "Go to playing album")]),
+                  (("goto_playing",), "Go to playing album"),
+                  (("repeat",), "Repeat: off / all / one"),
+                  (("shuffle",), "Shuffle mode on / off")]),
     ("Navigation", [(("move_up", "move_down"), "Move (also ↑ ↓)"), ("PgUp PgDn", "Page"),
                     (("top", "bottom"), "Top / bottom"), ("Enter", "Open or play"),
                     (("back",), "Back (also Esc ⌫)")]),
@@ -236,6 +238,7 @@ class Tui:
             "volume_up": lambda: player.change_volume(5),
             "volume_down": lambda: player.change_volume(-5),
             "goto_playing": self.goto_playing, "search": self.open_search,
+            "repeat": player.cycle_repeat, "shuffle": player.toggle_shuffle,
             "refresh": self.app.refresh, "help": self.toggle_help, "quit": self.request_quit,
             "move_up": lambda: self._move(-1), "move_down": lambda: self._move(1),
             "top": lambda: self._move(-10**9), "bottom": lambda: self._move(10**9),
@@ -515,8 +518,10 @@ class Tui:
         self.put(line + 2, text_x, track.album + (f"  {self.sym['dot']}  {year}" if year else ""),
                  "secondary", width)
         q = player.queue
-        info = f"Track {q.index + 1} of {len(q)}  {self.sym['dot']}  " \
-               f"{format_duration(player.position)} / {format_duration(player.duration)}"
+        info = f"  {self.sym['dot']}  ".join(
+            [f"Track {q.index + 1} of {len(q)}",
+             f"{format_duration(player.position)} / {format_duration(player.duration)}"]
+            + self._mode_labels())
         self.put(line + 4, text_x, info, "muted", width)
         list_top = line + 6
         if list_top <= y + top_h - 2:
@@ -630,7 +635,7 @@ class Tui:
             Status.BUFFERING: (self.sym["loading"], "muted"),
             Status.STOPPED: (self.sym["stopped"], "muted"),
         }[status]
-        right = f"vol {player.volume}%"
+        right = f"  {self.sym['dot']}  ".join(self._mode_labels() + [f"vol {player.volume}%"])
         if status in (Status.PAUSED, Status.LOADING, Status.BUFFERING) or (status == Status.STOPPED and track):
             right = f"{status.value}  {self.sym['dot']}  {right}"
 
@@ -691,6 +696,11 @@ class Tui:
             if used + 4 < title_w:
                 self.put(y, x0 + used, tx.truncate(detail, title_w - used), "secondary")
         self._draw_progress(y + height - 1, x0, x1, player.position, player.duration)
+
+    def _mode_labels(self) -> list[str]:
+        player = self.app.player
+        labels = {"all": ["repeat all"], "one": ["repeat one"]}.get(player.repeat, [])
+        return labels + (["shuffle"] if player.shuffle else [])
 
     def _draw_progress(self, y: int, x0: int, x1: int, position, duration) -> None:
         times = f"{format_duration(position)} / {format_duration(duration)}"

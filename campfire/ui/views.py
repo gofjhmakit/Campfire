@@ -124,7 +124,8 @@ class ArtistView(View):
         self.title = artist.name
         albums = app.library.artist_albums(self.key)
         count = sum(len(app.library.tracks_of(a.id) or []) for a in albums)
-        rows = [Row(("Play all tracks", "", str(count) if count else ""), "action", "play-artist")]
+        rows = [Row(("Play all tracks", "", str(count) if count else ""), "action", "play"),
+                Row(("Shuffle all tracks", "", ""), "action", "shuffle")]
         for album in albums:
             tracks = app.library.tracks_of(album.id)
             n = len(tracks) if tracks is not None else album.song_count
@@ -133,11 +134,11 @@ class ArtistView(View):
         return rows
 
     def subtitle(self, app):
-        return _plural(max(0, len(self._rows) - 1), "album")
+        return _plural(sum(1 for r in self._rows if r.kind == "album"), "album")
 
     def activate(self, app, row):
         if row.kind == "action":
-            app.play_artist(self.key)
+            app.play_artist(self.key, shuffle=True if row.item == "shuffle" else None)
             return None
         return AlbumView(row.item.id)
 
@@ -187,7 +188,8 @@ class AlbumView(View):
         various = any(t.artist != album.artist for t in tracks)
         self.headers = ("#", "TITLE", "ARTIST" if various else "", "TIME")
         total = sum(t.duration or 0 for t in tracks)
-        rows = [Row(("", "Play album", "", format_duration(total) if total else ""), "action", "play-album")]
+        rows = [Row(("", "Play album", "", format_duration(total) if total else ""), "action", "play"),
+                Row(("", "Shuffle album", "", ""), "action", "shuffle")]
         for i, t in enumerate(tracks, 1):
             rows.append(Row((str(t.track_no or i), t.title, t.artist if various else "",
                              format_duration(t.duration)), "track", t, track_id=t.id))
@@ -203,7 +205,7 @@ class AlbumView(View):
         if album.genre:
             parts.append(album.genre)
         if self._rows:
-            parts.append(_plural(len(self._rows) - 1, "track"))
+            parts.append(_plural(sum(1 for r in self._rows if r.kind == "track"), "track"))
         return " · ".join(parts)
 
     def empty_message(self, app):
@@ -213,7 +215,7 @@ class AlbumView(View):
 
     def activate(self, app, row):
         if row.kind == "action":
-            app.play_album(self.album_id)
+            app.play_album(self.album_id, shuffle=True if row.item == "shuffle" else None)
         else:
             app.play_album(self.album_id, row.track_id)
         return None
@@ -226,16 +228,23 @@ class TracksView(View):
     columns = [(12, 3, "left"), (10, 2, "left"), (10, 2, "left"), (5, 0, "right")]
 
     def build(self, app):
-        return [Row((t.title, t.artist, t.album, format_duration(t.duration)), "track", t, track_id=t.id)
-                for t in app.library.all_tracks()]
+        tracks = app.library.all_tracks()
+        if not tracks:
+            return []
+        return [Row(("Shuffle all tracks", "", "", ""), "action", "shuffle")] + [
+            Row((t.title, t.artist, t.album, format_duration(t.duration)), "track", t, track_id=t.id)
+            for t in tracks]
 
     def subtitle(self, app):
-        return str(len(self._rows)) if self._rows else ""
+        return str(len(self._rows) - 1) if self._rows else ""
 
     def empty_message(self, app):
         return _sync_hint(app) or "No tracks loaded."
 
     def activate(self, app, row):
+        if row.kind == "action":
+            app.play_all(shuffle=True)
+            return None
         # Play the track and continue with the rest of its album.
         app.play_album(row.item.album_id, row.track_id)
         return None

@@ -8,6 +8,8 @@ official [Subsonic API](https://blog.bandcamp.com/2026/07/16/discover-improvemen
 
 * Browse your collection by artist, album or track. Search all three instantly.
 * Play an album in order, start anywhere within it, or play everything by an artist.
+* Shuffle mode, plus one-step shuffle of an album, an artist or your whole
+  collection. Repeat the whole queue or one track.
 * The playback queue auto-advances and skips tracks that can't be played.
 * Black-and-orange default theme, plus file-based TOML themes.
 * Library metadata is cached locally (SQLite) for instant startup.
@@ -110,6 +112,8 @@ Press `?` in the app for this list. These are the defaults; see
 | `s` | Stop |
 | `+` / `-` | Volume up / down |
 | `.` | Go to the album that is playing |
+| `l` | Repeat: off → all (the whole queue) → one (the current track) |
+| `z` | Shuffle mode on / off. The current track keeps playing; only the upcoming tracks are reordered, and turning it off restores their order |
 | `↑` `↓` / `j` `k` | Move |
 | `PgUp` `PgDn`, `g` `G`, `Home` `End` | Page, top / bottom |
 | `Enter` | Open, or play from the selected track |
@@ -129,7 +133,14 @@ query and `Esc` returns to the previous view.
 What `Enter` does:
 
 * **Album row:** opens the album.
-* **"Play album" / "Play all tracks":** starts playback.
+* **"Play album" / "Play all tracks":** starts playback in order.
+* **"Shuffle album" / "Shuffle all tracks":** starts playback in random
+  order and turns shuffle mode on. Tracks has a "Shuffle all tracks" row for
+  your whole collection.
+
+While shuffle mode is on, anything you start plays in random order. If you
+picked a specific track, it plays first. With repeat all, each pass through
+the queue gets a new order.
 * **Track in an album:** plays from that track to the end of the album.
 * **Track in the Tracks list or search:** a search result opens its album with
   the track selected; in the Tracks list it plays that track and the rest of
@@ -161,6 +172,8 @@ album_art = "auto"               # "auto", "graphics", "blocks" or "off"
 seek_seconds = 10
 volume = 80                      # initial volume, 0-100
 previous_restart_seconds = 3.0   # "previous" restarts the track after this
+repeat = "off"                   # repeat mode at startup: "off", "all" or "one"
+shuffle = false                  # shuffle mode at startup
 mpv_path = "mpv"
 mpv_user_config = false          # load your mpv.conf and mpv scripts (see Security)
 
@@ -251,6 +264,7 @@ The actions and their defaults:
 | `goto_playing` | `.` | | `refresh` | `r` |
 | `volume_up` | `+`, `=` | | `help` | `?` |
 | `volume_down` | `-` | | `quit` | `q` |
+| `repeat` | `l` | | `shuffle` | `z` |
 | | | | `move_up` / `move_down` | `k` / `j` |
 | `top` / `bottom` | `g` / `G` | | `back` | `h` |
 

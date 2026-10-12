@@ -49,6 +49,8 @@ class Settings:
     previous_restart_seconds: float = 3.0
     mpv_path: str = "mpv"
     mpv_user_config: bool = False
+    repeat: str = "off"               # "off" | "all" | "one"
+    shuffle: bool = False
     # [library]
     cache_max_age_hours: float = 24.0
     # [server]
@@ -62,7 +64,7 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "ui": ("theme", "visualizer", "spectrum_bands", "spectrum_style", "spectrum_peaks",
            "album_art"),
     "playback": ("seek_seconds", "volume", "previous_restart_seconds", "mpv_path",
-                 "mpv_user_config"),
+                 "mpv_user_config", "repeat", "shuffle"),
     "library": ("cache_max_age_hours",),
     "server": ("server_url",),
 }
@@ -96,6 +98,10 @@ volume = 80
 # "Previous" restarts the current track if it has played longer than this
 # many seconds; otherwise it goes to the previous track in the queue.
 previous_restart_seconds = 3.0
+# Repeat mode at startup: "off", "all" (the whole queue) or "one" (one track).
+repeat = "off"
+# Shuffle mode at startup.
+shuffle = false
 # mpv executable name or full path.
 mpv_path = "mpv"
 # Load your own mpv.conf and mpv scripts. Off by default: stream URLs contain
@@ -119,6 +125,7 @@ url = "{server_url}"
 # play_pause = "space"      seek_back = "left"       seek_forward = "right"
 # next = "n"                previous = "p"           stop = "s"
 # volume_up = ["+", "="]    volume_down = "-"        goto_playing = "."
+# repeat = "l"              shuffle = "z"
 # artists = "1"             albums = "2"             tracks = "3"
 # queue = "4"               now_playing = "5"        search = "/"
 # refresh = "r"             help = "?"               quit = "q"
@@ -131,6 +138,7 @@ CHOICES = {
     "visualizer": ("spectrum", "meter", "off"),
     "spectrum_style": ("bars", "segments"),
     "album_art": ("auto", "graphics", "blocks", "off"),
+    "repeat": ("off", "all", "one"),
 }
 
 

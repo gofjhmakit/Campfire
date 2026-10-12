@@ -9,7 +9,7 @@ from campfire.config import Settings
 from campfire.credentials import Credentials
 from campfire.theme import default_theme
 from campfire.ui import text as tx
-from campfire.ui.views import AlbumsView, AlbumView, ArtistView, QueueView, SearchView
+from campfire.ui.views import AlbumsView, AlbumView, ArtistView, QueueView, SearchView, TracksView
 
 from .helpers import album, temp_dir, tracks
 
@@ -122,11 +122,11 @@ class AppTests(unittest.TestCase):
         self.assertIsInstance(album_view, AlbumView)
         rows = album_view.rows(self.app)
         self.assertEqual(rows[0].kind, "action")
-        self.assertEqual(len(rows), 4)
+        self.assertEqual([r.kind for r in rows], ["action", "action", "track", "track", "track"])
 
         artist_view = ArtistView("band")
         rows = artist_view.rows(self.app)
-        self.assertEqual([r.kind for r in rows], ["action", "album", "album"])
+        self.assertEqual([r.kind for r in rows], ["action", "action", "album", "album"])
         artist_view.activate(self.app, rows[0])
         self.assertEqual(len(self.app.player.queue), 6)
         self.assertEqual(len(QueueView().rows(self.app)), 6)
@@ -139,6 +139,29 @@ class AppTests(unittest.TestCase):
         self.assertIsInstance(target, AlbumView)
         target_rows = target.rows(self.app)
         self.assertEqual(target_rows[target.cursor].track_id, rows[0].track_id)
+
+    def test_shuffle_actions(self):
+        a1, a2 = album(1, "Band"), album(2, "Band")
+        self.sync([a1, a2, album(3, "Else")])
+        player = self.app.player
+        player._rng.seed(1)
+        AlbumView(a1.id).activate(self.app, AlbumView(a1.id).rows(self.app)[1])  # "Shuffle album"
+        self.assertTrue(player.shuffle)
+        self.assertEqual(sorted(t.id for t in player.queue.tracks), sorted(t.id for t in tracks(a1)))
+        ArtistView("band").activate(self.app, ArtistView("band").rows(self.app)[1])  # "Shuffle all tracks"
+        self.assertEqual(len(player.queue), 6)
+        tracks_view = TracksView()
+        rows = tracks_view.rows(self.app)
+        self.assertEqual(rows[0].kind, "action")
+        self.assertEqual(tracks_view.subtitle(self.app), "9")
+        tracks_view.activate(self.app, rows[0])                   # shuffle the whole collection
+        self.assertEqual(len(player.queue), 9)
+        # "Play album" follows the mode: still shuffled until shuffle is turned off.
+        AlbumView(a1.id).activate(self.app, AlbumView(a1.id).rows(self.app)[0])
+        self.assertTrue(player.shuffle)
+        player.toggle_shuffle()
+        AlbumView(a1.id).activate(self.app, AlbumView(a1.id).rows(self.app)[0])
+        self.assertEqual(player.queue.tracks, tracks(a1))
 
     def test_notices_expire_and_deduplicate(self):
         self.app.notify("info", "hello")

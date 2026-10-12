@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 from ..models import Track
 
 
@@ -49,6 +51,13 @@ class PlayQueue:
             self.index = index
             return self.current
         return None
+
+    def shuffle_upcoming(self, rng: random.Random) -> None:
+        """Shuffle the tracks after the current one (all of them if none is current)."""
+        keep = self.tracks[:self.index + 1]
+        rest = self.tracks[self.index + 1:]
+        rng.shuffle(rest)
+        self.tracks = keep + rest  # a new list, so views notice the change
 
     def upcoming(self, limit: int | None = None) -> list[Track]:
         rest = self.tracks[self.index + 1:] if self.index >= 0 else list(self.tracks)

@@ -21,6 +21,8 @@ ACTIONS: dict[str, tuple[list[str], str]] = {
     "volume_up": (["+", "="], "Volume up"),
     "volume_down": (["-"], "Volume down"),
     "goto_playing": (["."], "Go to playing album"),
+    "repeat": (["l"], "Repeat: off / all / one"),
+    "shuffle": (["z"], "Shuffle mode on / off"),
     "artists": (["1"], "Artists"),
     "albums": (["2"], "Albums"),
     "tracks": (["3"], "Tracks"),
