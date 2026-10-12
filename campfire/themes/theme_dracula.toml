@@ -1,0 +1,17 @@
+# Dracula-inspired theme. Palette: https://draculatheme.com/contribute
+name = "Dracula"
+
+[colors]
+background     = "#282a36"
+text           = "#f8f8f2"
+text_secondary = "#bfbfbf"
+muted          = "#6272a4"
+accent         = "#bd93f9"
+selection_fg   = "#f8f8f2"
+selection_bg   = "#44475a"
+current_track  = "#50fa7b"
+progress_fill  = "#ff79c6"
+progress_empty = "#44475a"
+border         = "#44475a"
+error          = "#ff5555"
+warning        = "#f1fa8c"

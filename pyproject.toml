@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "campfire"
+version = "0.1.0"
+description = "A terminal music player for your Bandcamp collection (via Bandcamp's Subsonic API)."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = []
+classifiers = [
+    "Environment :: Console :: Curses",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+]
+
+[project.scripts]
+campfire = "campfire.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["campfire*"]
+
+[tool.setuptools.package-data]
+"campfire.themes" = ["*.toml"]

@@ -1,0 +1,17 @@
+# Campfire default theme: black and orange.
+name = "Campfire"
+
+[colors]
+background     = "#000000"
+text           = "#d0d0d0"
+text_secondary = "#8a8a8a"
+muted          = "#585858"
+accent         = "#ff8700"
+selection_fg   = "#ffaf5f"
+selection_bg   = "#262626"
+current_track  = "#ff8700"
+progress_fill  = "#ff8700"
+progress_empty = "#303030"
+border         = "#262626"
+error          = "#ff5f5f"
+warning        = "#ffd75f"

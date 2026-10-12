@@ -218,3 +218,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Campfire local research / scratch
+.research/
+
+# Secrets
+.env
+.secrets
+.apikeys
+
+tests/.tmp/
