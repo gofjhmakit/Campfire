@@ -25,6 +25,17 @@ from .theme import Theme
 NOTICE_SECONDS = {"info": 4.0, "warning": 8.0, "error": 12.0}
 
 
+def _make_private(path) -> None:
+    """Restrict an existing cache directory created with default permissions."""
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+        for item in path.glob("library.sqlite3*"):
+            os.chmod(item, 0o600)
+    except OSError:
+        pass
+
+
 class EventBus:
     """Thread-safe queue whose `fileno()` becomes readable when events arrive,
     so the UI can sleep in select() instead of polling."""
@@ -92,6 +103,7 @@ class App:
         self.bus = EventBus()
         self.client = SubsonicClient(settings.server_url, credentials.username, credentials.password)
         self.cache = Cache(cache_dir() / "library.sqlite3", credentials.username, settings.server_url)
+        _make_private(cache_dir())
         self.library = self.cache.load() or Library()
         self.library_version = 0  # bumped whenever library contents change
         self.sync = SyncState()
@@ -100,7 +112,8 @@ class App:
         self._album_requests: set[str] = set()
         self.notices: list[Notice] = []
         self.backend = MpvBackend(self.bus, runtime_dir(), settings.mpv_path,
-                                  settings.volume, settings.visualizer)
+                                  settings.volume, settings.visualizer,
+                                  user_config=settings.mpv_user_config)
         self.player = PlaybackController(
             self.backend, lambda track: self.client.stream_url(track.id), self.notify,
             seek_seconds=settings.seek_seconds,

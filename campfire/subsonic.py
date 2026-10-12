@@ -22,6 +22,7 @@ from . import APP_NAME, __version__
 from .models import Album, Track, parse_album, parse_items, parse_track, sort_album_tracks
 
 API_VERSION = "1.16.1"
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024  # a whole-collection listing is far smaller
 USER_AGENT = f"Campfire/{__version__}"
 
 
@@ -61,7 +62,7 @@ class SubsonicClient:
         self.username = username
         self._password = password
         self.timeout = timeout
-        self._opener = opener or urllib.request.build_opener()
+        self._opener = opener or urllib.request.build_opener(_SecureRedirectHandler)
 
     def __repr__(self) -> str:
         return f"SubsonicClient({self.base_url!r}, user={self.username!r})"
@@ -93,11 +94,14 @@ class SubsonicClient:
         for attempt in range(2):
             try:
                 with self._opener.open(request, timeout=self.timeout) as response:
-                    body = response.read()
+                    body = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(body) > MAX_RESPONSE_BYTES:
+                    raise SubsonicError(f"Response from Bandcamp for '{method}' is too large.")
                 break
             except urllib.error.HTTPError as exc:
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
                 if exc.code == 429 and attempt == 0:
+                    exc.close()
                     time.sleep(_retry_delay(retry_after))
                     continue
                 raise self._http_error(method, exc) from None
@@ -176,6 +180,16 @@ class SubsonicClient:
                song_count: int = 50) -> dict:
         return self.call("search3", query=query, artistCount=artist_count,
                          albumCount=album_count, songCount=song_count).get("searchResult3") or {}
+
+
+class _SecureRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only to https (never downgrade a request to plain http)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlsplit(newurl).scheme != "https" and \
+                urllib.parse.urlsplit(req.full_url).scheme == "https":
+            raise NetworkError("Bandcamp redirected to an insecure (http) address; refused.")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _retry_delay(header: str | None) -> float:

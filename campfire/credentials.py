@@ -167,11 +167,14 @@ def _toml_str(value: str) -> str:
 
 def _file_save(username: str, password: str) -> None:
     path = credentials_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        raise CredentialError(f"Could not write {path}: {exc.strerror}") from None
+    os.fchmod(fd, 0o600)  # in case the file already existed with wider permissions
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(f"username = {_toml_str(username)}\npassword = {_toml_str(password)}\n")
-    os.chmod(path, 0o600)
 
 
 def _file_load() -> Credentials | None:

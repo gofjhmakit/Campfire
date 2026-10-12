@@ -170,6 +170,7 @@ seek_seconds = 10
 volume = 80                      # initial volume, 0-100
 previous_restart_seconds = 3.0   # "previous" restarts the track after this
 mpv_path = "mpv"
+mpv_user_config = false          # load your mpv.conf and mpv scripts (see Security)
 
 [library]
 cache_max_age_hours = 24
@@ -254,6 +255,24 @@ Any color you leave out is taken from the default theme. Colors are mapped to
 the nearest of the terminal's 256 (or 8) colors. If a theme file is missing or
 invalid, Campfire uses the default theme and shows a warning. Themes are plain
 data and can't run code.
+
+## Security
+
+Campfire's security measures and their limits are described in
+[docs/security.md](docs/security.md). In short:
+
+* Credentials are kept in the system keyring (or a `0600` file).
+* All traffic uses verified TLS.
+* Stream URLs contain an auth token, so they are never cached, logged or put
+  on a command line.
+* mpv runs without your `mpv.conf` and scripts by default, because scripts can
+  read the current URL.
+* If you think a URL or your credentials have leaked, regenerate the Subsonic
+  credentials in Bandcamp's Fan Settings and run `campfire login`.
+
+If you need your own mpv settings (for example a specific audio device), set
+`playback.mpv_user_config = true` in `config.toml`. Only do this if you trust
+every script in your mpv scripts folder.
 
 ## Running the tests
 

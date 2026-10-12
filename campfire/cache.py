@@ -7,6 +7,7 @@ truth. A corrupt or incompatible cache file is discarded and rebuilt.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -31,16 +32,26 @@ class Cache:
         # The cache belongs to one account on one server; anything else is ignored.
         self.owner = f"{account}@{server}"
 
+    def _open(self) -> sqlite3.Connection:
+        # The cache describes the user's collection: keep it private.
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not self.path.exists():
+            os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600))
+        return sqlite3.connect(self.path, timeout=5)
+
     def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path, timeout=5)
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, SCHEMA_VERSION):
+        conn = self._open()
+        try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version not in (0, SCHEMA_VERSION):
+                conn.close()
+                self._discard()
+                conn = self._open()
+            conn.executescript(SCHEMA)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        except sqlite3.Error:
             conn.close()
-            self._discard()
-            conn = sqlite3.connect(self.path, timeout=5)
-        conn.executescript(SCHEMA)
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            raise
         return conn
 
     def _discard(self) -> None:

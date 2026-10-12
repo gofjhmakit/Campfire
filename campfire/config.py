@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+import urllib.parse
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
@@ -43,6 +44,7 @@ class Settings:
     volume: int = 80
     previous_restart_seconds: float = 3.0
     mpv_path: str = "mpv"
+    mpv_user_config: bool = False
     # [library]
     cache_max_age_hours: float = 24.0
     # [server]
@@ -54,7 +56,8 @@ class Settings:
 # Which section of config.toml each setting lives in.
 SECTIONS: dict[str, tuple[str, ...]] = {
     "ui": ("theme", "visualizer"),
-    "playback": ("seek_seconds", "volume", "previous_restart_seconds", "mpv_path"),
+    "playback": ("seek_seconds", "volume", "previous_restart_seconds", "mpv_path",
+                 "mpv_user_config"),
     "library": ("cache_max_age_hours",),
     "server": ("server_url",),
 }
@@ -79,6 +82,10 @@ volume = 80
 previous_restart_seconds = 3.0
 # mpv executable name or full path.
 mpv_path = "mpv"
+# Load your own mpv.conf and mpv scripts. Off by default: stream URLs contain
+# your Subsonic auth token, and mpv scripts (scrobblers, presence plugins, ...)
+# can read the current URL. Enable only if you trust all your mpv scripts.
+mpv_user_config = false
 
 [library]
 # Refresh the cached library in the background when it is older than this.
@@ -191,6 +198,21 @@ def _coerce(value: object, type_name: str) -> object | None:
     return None
 
 
+def is_safe_server_url(url: str) -> bool:
+    """Credentials are sent with every request, so require TLS except to loopback."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+        parts.port  # raises ValueError for an invalid port
+    except ValueError:
+        return False
+    if not host or parts.username or parts.password or parts.query or parts.fragment:
+        return False
+    if parts.scheme == "https":
+        return True
+    return parts.scheme == "http" and host in ("127.0.0.1", "localhost", "::1")
+
+
 def _clamp(s: Settings) -> list[str]:
     warnings = []
     if not 0 <= s.volume <= 100:
@@ -203,7 +225,8 @@ def _clamp(s: Settings) -> list[str]:
         s.previous_restart_seconds = 0.0
     if s.cache_max_age_hours < 0:
         s.cache_max_age_hours = 0.0
-    if not s.server_url.startswith("https://") and not s.server_url.startswith("http://127.0.0.1"):
-        warnings.append("server.url must use https; using the Bandcamp default.")
+    if not is_safe_server_url(s.server_url):
+        warnings.append("server.url must be an https URL (plain http only for localhost); "
+                        "using the Bandcamp default.")
         s.server_url = DEFAULT_SERVER_URL
     return warnings

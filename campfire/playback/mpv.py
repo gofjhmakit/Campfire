@@ -23,6 +23,16 @@ from pathlib import Path
 # decoded audio and exposes the measurements as the `af-metadata/viz` property.
 VIZ_FILTER = "@viz:lavfi=[astats=metadata=1:reset=1:measure_overall=none]"
 
+# The stream URLs carry Subsonic auth parameters (u/t/s), which can be replayed
+# against the API. These options are always forced on mpv's command line (which
+# overrides mpv.conf) so the URLs are only ever sent over verified TLS and are
+# never written to disk or handed to another program:
+#   tls-verify       older FFmpeg builds do not verify certificates by default
+#   ytdl=no          the ytdl hook would run `yt-dlp <url>`, exposing it in `ps`
+#   log-file=        a log file configured in mpv.conf would record the URLs
+#   save-position-on-quit=no   watch-later files can record the URLs
+SAFETY_OPTIONS = ("--tls-verify=yes", "--ytdl=no", "--log-file=", "--save-position-on-quit=no")
+
 OBSERVED = ("pause", "time-pos", "duration", "idle-active", "seekable",
             "paused-for-cache", "volume")
 
@@ -35,12 +45,15 @@ class MpvBackend:
     """Owns the mpv process. Events are delivered as ("mpv", dict) on `events`."""
 
     def __init__(self, events: queue.Queue, socket_dir: Path, mpv_path: str = "mpv",
-                 volume: int = 80, visualizer: bool = True):
+                 volume: int = 80, visualizer: bool = True, user_config: bool = False):
         self.events = events
         self.socket_dir = socket_dir
         self.mpv_path = mpv_path
         self.initial_volume = volume
         self.visualizer = visualizer
+        # mpv.conf and user scripts can read the current URL (and thus the auth
+        # token), e.g. presence or scrobbling scripts, so they are off by default.
+        self.user_config = user_config
         self._proc: subprocess.Popen | None = None
         self._sock: socket.socket | None = None
         self._send_lock = threading.Lock()
@@ -68,24 +81,30 @@ class MpvBackend:
         if not exe:
             raise BackendError(f"mpv not found ('{self.mpv_path}'). Install it, e.g. `brew install mpv` "
                                "or `sudo apt install mpv`.")
-        self.socket_dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.socket_dir, 0o700)
+        self.socket_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self.socket_dir, 0o700)  # only this user may talk to the mpv socket
         path = self.socket_dir / f"mpv-{os.getpid()}.sock"
         path.unlink(missing_ok=True)
-        args = [exe, "--idle=yes", "--no-video", "--no-terminal", "--force-window=no",
-                "--audio-display=no", "--input-default-bindings=no", "--keep-open=no",
-                "--gapless-audio=no", f"--volume={self.initial_volume}",
-                f"--input-ipc-server={path}"]
-        if self.visualizer:
-            args.append(f"--af={VIZ_FILTER}")
         self._closing = False
-        self._proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        self._proc = subprocess.Popen(self.command_line(exe, path), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                       stderr=subprocess.DEVNULL)
         self._socket_path = path
         self._sock = self._connect(path)
         threading.Thread(target=self._reader, name="mpv-ipc", daemon=True).start()
         for n, name in enumerate(OBSERVED, start=1):
             self._send(["observe_property", n, name])
+
+    def command_line(self, exe: str, socket_path: Path) -> list[str]:
+        args = [exe]
+        if not self.user_config:
+            args.append("--no-config")
+        args += [*SAFETY_OPTIONS, "--idle=yes", "--no-video", "--no-terminal", "--force-window=no",
+                 "--audio-display=no", "--input-default-bindings=no", "--keep-open=no",
+                 "--gapless-audio=no", f"--volume={self.initial_volume}",
+                 f"--input-ipc-server={socket_path}"]
+        if self.visualizer:
+            args.append(f"--af={VIZ_FILTER}")
+        return args
 
     def _connect(self, path: Path) -> socket.socket:
         deadline = time.monotonic() + 5
