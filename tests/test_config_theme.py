@@ -42,9 +42,20 @@ class ConfigTests(unittest.TestCase):
         settings, warnings = load_settings(self.path)
         self.assertEqual(warnings, [])
         self.assertEqual(settings.theme, "theme_dracula.toml")
-        self.assertFalse(settings.visualizer)
+        self.assertEqual(settings.visualizer, "off")  # old boolean form still accepted
         self.assertEqual(settings.seek_seconds, 30)
         self.assertEqual(settings.previous_restart_seconds, 5.0)
+
+    def test_visualizer_and_art_choices(self):
+        self.path.write_text('[ui]\nvisualizer = "meter"\nalbum_art = "blocks"\nspectrum_bands = 99\n'
+                             'spectrum_style = "lasers"\n')
+        settings, warnings = load_settings(self.path)
+        self.assertEqual((settings.visualizer, settings.album_art), ("meter", "blocks"))
+        self.assertEqual(settings.spectrum_bands, 32)          # clamped
+        self.assertEqual(settings.spectrum_style, "bars")      # invalid choice -> default
+        self.assertEqual(len(warnings), 2)
+        self.path.write_text('[ui]\nvisualizer = true\n')
+        self.assertEqual(load_settings(self.path)[0].visualizer, "spectrum")
 
     def test_invalid_toml_falls_back_to_defaults(self):
         self.path.write_text("[ui\ntheme = ")

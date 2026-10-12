@@ -35,7 +35,8 @@ class Album:
     song_count: int | None = None
     duration: int | None = None
     genre: str = ""
-    created: str = ""  # ISO timestamp; for Bandcamp likely the purchase/add date
+    created: str = ""  # as sent by the server; Bandcamp: RFC 1123 date
+    cover_art: str = ""  # getCoverArt id
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -85,6 +86,7 @@ def parse_album(d: dict) -> Album:
         duration=_int(d.get("duration")),
         genre=_str(d.get("genre")),
         created=_str(d.get("created")),
+        cover_art=_str(d.get("coverArt")),
     )
 
 

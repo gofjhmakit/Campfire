@@ -29,6 +29,10 @@ ROLES = (
     "border",           # separators
     "error",
     "warning",
+    "spectrum_low",     # spectrum bars: bottom of the gradient
+    "spectrum_mid",
+    "spectrum_high",    # top of the gradient
+    "spectrum_peak",    # falling peak markers
 )
 
 RGB = tuple[int, int, int]

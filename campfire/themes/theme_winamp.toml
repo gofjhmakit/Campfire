@@ -1,0 +1,21 @@
+# Winamp 2 classic: green LCD text and the green-yellow-red spectrum.
+name = "Winamp classic"
+
+[colors]
+background     = "#000000"
+text           = "#00e000"
+text_secondary = "#00a800"
+muted          = "#2f6f2f"
+accent         = "#e0e000"
+selection_fg   = "#ffffff"
+selection_bg   = "#1c3c1c"
+current_track  = "#ffffff"
+progress_fill  = "#e0e000"
+progress_empty = "#1c3c1c"
+border         = "#1c3c1c"
+error          = "#ff3030"
+warning        = "#ffb000"
+spectrum_low   = "#00c000"
+spectrum_mid   = "#e0e000"
+spectrum_high  = "#ff2000"
+spectrum_peak  = "#c0c0c0"

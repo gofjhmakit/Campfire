@@ -15,7 +15,7 @@ from pathlib import Path
 from .library import Library
 from .models import Album, Track
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: albums carry cover_art
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

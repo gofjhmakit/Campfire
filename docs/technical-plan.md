@@ -74,16 +74,47 @@ mpv's command line, so they are not visible in `ps`. mpv's own logging is disabl
 
 ### Visualisation
 
-mpv's lavfi bridge can run ffmpeg's `astats` filter on decoded audio
-(`--af=@viz:lavfi=[astats=metadata=1:reset=1]`) and expose the measurements as
-the `af-metadata/viz` property. Campfire polls it at 10 Hz while playing and
-draws a stereo RMS level meter. **Verified**: with an ffmpeg-generated test tone
-the property returned steady per-channel `RMS_level` values (about −24.5 dBFS),
-and it is independent of mpv's output volume because the filter runs before the
-volume stage. The meter is real measurement data, not animation, and is hidden
-whenever playback is not running. It can be
-disabled with `ui.visualizer = false`. A spectrum analyser was not implemented
-(it would need an FFT pipeline for little benefit).
+mpv exposes no audio samples, only per-frame filter metadata (`af-metadata/<label>`).
+Campfire inserts one lavfi graph (`playback/mpv.py: analysis_filter`):
+
+```
+aformat=stereo → asplit → [main] untouched stereo
+                       → [ana] mono mix → asplit N → bandpass(f_i, Q=2.5) ×N
+amerge(N bands + main) → asetnsamples=2048 → astats(RMS per channel) → pan back to the main stereo channels
+```
+
+* `amerge` drops frame metadata (verified with FFmpeg 9), so `astats` must run
+  *after* merging. `pan` keeps the metadata.
+* Channels 1..N are the spectrum and N+1/N+2 the stereo levels for the meter.
+* **Verified:** with 100 Hz + 3 kHz test tones, the 89 Hz and 3238 Hz bands are
+  the loudest (an automated test reproduces this with ffmpeg), and the output
+  audio level is unchanged.
+* A failing filter graph makes mpv reject the file, so on a playback error
+  while the filter is active, the controller removes it (`af remove @viz`)
+  and retries the track once.
+* Measured CPU: about 3% (UI) plus 5–8% (mpv, decoding included) of one core
+  while playing; 0 when paused.
+* No oscilloscope: it would need raw samples.
+
+### Album art
+
+`getCoverArt` works (JPEG of about 47 KB served from the bcbits CDN; the `size`
+parameter is ignored). The stdlib cannot decode JPEG, so the optional `ffmpeg`
+CLI crops and scales each cover once to a 64×64 RGB grid (half-block
+rendering, box-filtered per size) and a 480×480 PNG (kitty graphics
+protocol).
+
+Real images use the kitty protocol's **Unicode placeholders**: the PNG is
+uploaded once per (cover, slot) with a virtual placement (`a=p,U=1`). The cells
+are then drawn through curses as U+10EEEE plus row/column diacritics, with the
+image id as the 256-color foreground (ids 16–255, because tmux re-encodes 0–15
+as basic SGR colors). That's why it works unchanged inside tmux, where upload
+commands go through passthrough (`\ePtmux;…`), and why curses redraws, the
+help overlay and scrolling need no special handling. **Verified:** ncurses and
+tmux 3.7 treat a placeholder as exactly one cell wide, and tmux forwards the
+image id as `38;5;N`. **Verified by the user:** real covers render in Ghostty
+1.3.1 inside tmux 3.7 with `allow-passthrough on`, both in the album view and as
+the Now Playing thumbnail (the README screenshot).
 
 ## 4. Terminal UI
 
@@ -121,6 +152,7 @@ enough for this layout. Rich/Textual/urwid were not needed.
 | Dependency | Purpose | Why not stdlib | Required? |
 |---|---|---|---|
 | mpv (≥ 0.33; tested 0.41) | Audio decoding, streaming, output | No stdlib audio playback | Required for playback; browsing works without it |
+| ffmpeg CLI | Decoding album art (JPEG) | No stdlib image decoder | Optional; no art without it |
 | setuptools | Build backend for `pip install` | Packaging only | Build-time only |
 | `security` / `secret-tool` | Secure credential storage | No stdlib keyring | Optional; file fallback |
 

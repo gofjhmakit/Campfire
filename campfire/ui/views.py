@@ -311,3 +311,28 @@ class SearchView(View):
         if row.kind == "track":
             view.pending_track = row.track_id
         return view
+
+
+class NowPlayingView(View):
+    """Artwork, track details and the large visualizer; rows are the upcoming tracks."""
+    title = "Now Playing"
+    root = "now_playing"
+    headers = ("#", "UP NEXT", "ARTIST", "TIME")
+    columns = [(3, 0, "right"), (12, 3, "left"), (10, 2, "left"), (5, 0, "right")]
+
+    def cache_key(self, app):
+        q = app.player.queue
+        return (id(q.tracks), len(q.tracks), q.index)
+
+    def build(self, app):
+        q = app.player.queue
+        start = q.index + 1
+        return [Row((str(i), t.title, t.artist, format_duration(t.duration)), "track", i - 1,
+                    track_id=t.id) for i, t in enumerate(q.tracks[start:], start + 1)]
+
+    def empty_message(self, app):
+        return "Nothing queued after this track." if app.player.current else ""
+
+    def activate(self, app, row):
+        app.player.jump(row.item)
+        return None

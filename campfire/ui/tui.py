@@ -17,15 +17,21 @@ from ..models import format_duration
 from ..playback.controller import Status
 from ..theme import load_theme
 from . import text as tx
+from . import graphics
 from .colors import Palette
 from .keys import Keymap
-from .views import (AlbumsView, AlbumView, ArtistsView, QueueView, Row, SearchView,
-                    TracksView, View)
+from .views import (AlbumsView, AlbumView, ArtistsView, NowPlayingView, QueueView, Row,
+                    SearchView, TracksView, View)
+from .visuals import (METER_FLOOR_DB, Dynamics, block_rows, draw_meter, draw_spectrum,
+                      normalize)
 
 MIN_W, MIN_H = 40, 10
 SIDEBAR_MIN_WIDTH = 84
 SIDEBAR_W = 16
 MAX_FPS = 20
+ANALYSIS_HZ = 20
+METER_CELLS = 10
+SLOT_PANEL, SLOT_VIEW = 1, 2  # each slot shows its own copy of a cover (own size)
 
 ENTER = {"\n", "\r", curses.KEY_ENTER}
 BACKSPACE = {"\x7f", "\b", curses.KEY_BACKSPACE}
@@ -44,8 +50,8 @@ ASCII_SYMBOLS = {
 
 # Sidebar / tab sections: (view root, label). The root name is also the keymap action.
 NAV = [("artists", "Artists"), ("albums", "Albums"), ("tracks", "Tracks"),
-       ("queue", "Queue"), ("search", "Search")]
-SECTIONS = ("artists", "albums", "tracks", "queue")
+       ("queue", "Queue"), ("now_playing", "Now Playing"), ("search", "Search")]
+SECTIONS = ("artists", "albums", "tracks", "queue", "now_playing")
 
 # Help screen: sections of (actions or a fixed key label, description).
 HELP = [
@@ -57,7 +63,8 @@ HELP = [
                     (("top", "bottom"), "Top / bottom"), ("Enter", "Open or play"),
                     (("back",), "Back (also Esc ⌫)")]),
     ("Library", [(("artists",), "Artists"), (("albums",), "Albums"), (("tracks",), "Tracks"),
-                 (("queue",), "Queue"), (("search",), "Search"), (("refresh",), "Refresh library")]),
+                 (("queue",), "Queue"), (("now_playing",), "Now Playing"),
+                 (("search",), "Search"), (("refresh",), "Refresh library")]),
     ("General", [(("help",), "This help"), (("quit",), "Quit")]),
 ]
 
@@ -73,14 +80,31 @@ class Tui:
         utf8 = "utf" in (locale.getpreferredencoding(False) or "").lower()
         self.sym = UNICODE_SYMBOLS if utf8 else ASCII_SYMBOLS
         self.roots: dict[str, View] = {"artists": ArtistsView(), "albums": AlbumsView(),
-                                       "tracks": TracksView(), "queue": QueueView()}
+                                       "tracks": TracksView(), "queue": QueueView(),
+                                       "now_playing": NowPlayingView()}
         self.stack: list[View] = [self.roots["albums"]]
         self.show_help = False
         self.quit = False
         self.resized = False
-        self.levels: list[float] = []
+        self.spectrum = Dynamics()
+        self.meter = Dynamics()
         self._last_draw = 0.0
-        self._last_levels = 0.0
+        self._last_poll = 0.0
+        # Artwork: real images where the terminal supports them, text blocks otherwise.
+        self.graphics: graphics.KittyImages | None = None
+        setting = app.settings.album_art
+        if app.art_enabled and setting in ("auto", "graphics") and self.pal.colors >= 256:
+            mode, hint = graphics.detect()
+            if setting == "graphics" and mode is None:
+                mode = "tmux" if os.environ.get("TMUX") else "direct"  # forced by the user
+            elif hint:
+                app.notify("info", hint)
+            if mode:
+                self.graphics = graphics.KittyImages(tmux=mode == "tmux")
+        self.art_blocks = app.art_enabled and self.graphics is None and setting != "off" \
+            and self.sym is UNICODE_SYMBOLS
+        self._big_spectrum = False    # the Now Playing view drew its spectrum this frame
+        self._block_cache: dict = {}
         self._page = 10
         self._mpv_missing = not app.mpv_available
 
@@ -107,6 +131,13 @@ class Tui:
         self.scr.bkgd(" ", self.pal["text"])
         signal.signal(signal.SIGWINCH, self._on_resize)
         self.app.start()
+        try:
+            self._loop()
+        finally:
+            if self.graphics:
+                self.graphics.close()
+
+    def _loop(self) -> None:
         dirty = True
         while not self.quit:
             if self.app.process_events():
@@ -114,7 +145,7 @@ class Tui:
             if self.resized:
                 self._apply_resize()
                 dirty = True
-            if self._poll_levels():
+            if self._poll_analysis():
                 dirty = True
             now = time.monotonic()
             if dirty and now - self._last_draw >= 1 / MAX_FPS:
@@ -130,8 +161,8 @@ class Tui:
         if dirty:
             return 1 / MAX_FPS
         status = self.app.player.status
-        if status == Status.PLAYING and self.app.settings.visualizer:
-            return 0.1
+        if status == Status.PLAYING and self.app.settings.visualizer != "off":
+            return 1 / ANALYSIS_HZ
         if status in (Status.PLAYING, Status.LOADING, Status.BUFFERING):
             return 0.5
         expiry = self.app.next_notice_expiry()
@@ -168,29 +199,21 @@ class Tui:
             pass
         self.scr.clear()
 
-    def _poll_levels(self) -> bool:
-        if not self.app.settings.visualizer:
-            return False
-        if self.app.player.status != Status.PLAYING:
-            if self.levels:
-                self.levels = []
-                return True
+    def _poll_analysis(self) -> bool:
+        """Fetch measurements from mpv and animate. True if the display changed."""
+        if self.app.settings.visualizer == "off":
             return False
         now = time.monotonic()
-        if now - self._last_levels < 0.1:
+        dt = now - self._last_poll
+        if dt < 1 / ANALYSIS_HZ:
             return False
-        self._last_levels = now
-        levels = self.app.player.levels()
-        if levels is None:
-            if self.levels:
-                self.levels = []
-                return True
-            return False
-        # Fast attack, slow release, like a real meter.
-        normalized = [max(0.0, min(1.0, (db + 50) / 50)) if db == db else 0.0 for db in levels]
-        previous = self.levels or [0.0] * len(normalized)
-        self.levels = [max(n, p - 0.08) for n, p in zip(normalized, previous + [0.0] * len(normalized))]
-        return True
+        self._last_poll = now
+        analysis = self.app.player.analysis()
+        bands = [normalize(db) for db in analysis.bands] if analysis else None
+        levels = [normalize(db, METER_FLOOR_DB, 0.0) for db in analysis.levels] if analysis else None
+        visible = self.spectrum.update(bands, dt)
+        visible |= self.meter.update(levels, dt)
+        return visible or analysis is not None
 
     # -- Input -------------------------------------------------------------------------
 
@@ -310,6 +333,17 @@ class Tui:
             pass
         return x + tx.width(s)
 
+    def put_attr(self, y: int, x: int, s: str, attr: int) -> None:
+        """Draw pre-cleaned text with a raw curses attribute (visualizer, artwork)."""
+        h, w = self.scr.getmaxyx()
+        if y < 0 or y >= h or x < 0 or x >= w:
+            return
+        s = s[: max(0, w - x - (1 if y == h - 1 else 0))]
+        try:
+            self.scr.addstr(y, x, s, attr)
+        except curses.error:
+            pass
+
     def hline(self, y: int, x: int, n: int, role: str = "border") -> None:
         if n > 0:
             self.put(y, x, self.sym["sep"] * n, role)
@@ -317,12 +351,16 @@ class Tui:
     # -- Frame -------------------------------------------------------------------------------
 
     def draw(self) -> None:
+        self._big_spectrum = False
+        self._draw_frame()
+        self.scr.noutrefresh()
+        curses.doupdate()
+
+    def _draw_frame(self) -> None:
         self.scr.erase()
         h, w = self.scr.getmaxyx()
         if h < MIN_H or w < MIN_W:
             self.put(h // 2, max(0, (w - 26) // 2), f"Terminal too small ({w}×{h})", "warning")
-            self.scr.noutrefresh()
-            curses.doupdate()
             return
 
         hints_h = 1 if h >= 16 else 0
@@ -347,8 +385,6 @@ class Tui:
             self.draw_hints(h - 1, 2, w - 2)
         if self.show_help:
             self.draw_help(h, w)
-        self.scr.noutrefresh()
-        curses.doupdate()
 
     def draw_header(self, y: int, w: int) -> None:
         x = self.put(y, 2, APP_TITLE, "accent")
@@ -402,7 +438,6 @@ class Tui:
 
     def draw_view(self, top: int, bottom: int, x0: int, x1: int) -> None:
         view = self.view
-        width = x1 - x0
         rows = view.rows(self.app)
         y = top
         if isinstance(view, SearchView):
@@ -419,7 +454,20 @@ class Tui:
             self.put(y, x1 - tx.width(pos), pos, "muted")
         y += 2
 
-        widths = tx.column_widths(width - 2, [(c[0], c[1]) for c in view.columns])
+        if isinstance(view, NowPlayingView):
+            self.draw_now_view(view, rows, y, bottom, x0, x1)
+            return
+        if isinstance(view, AlbumView):
+            album = self.app.library.album(view.album_id)
+            box = self._art_box(album, bottom - y + 1, x1 - x0, max_rows=10)
+            if box:
+                art_rows, art_cols = box
+                self._draw_art(album, y, x1 - art_cols, art_cols, art_rows, SLOT_VIEW)
+                x1 -= art_cols + 3
+        self._draw_list(view, rows, y, bottom, x0, x1)
+
+    def _draw_list(self, view: View, rows: list[Row], y: int, bottom: int, x0: int, x1: int) -> None:
+        widths = tx.column_widths(x1 - x0 - 2, [(c[0], c[1]) for c in view.columns])
         if view.headers and rows and y <= bottom:
             self._draw_cells(y, x0 + 2, view.headers, widths, view.columns, "muted", "muted")
             y += 1
@@ -427,7 +475,7 @@ class Tui:
         visible = max(1, bottom - y + 1)
         self._page = max(1, visible - 1)
         if not rows:
-            self.put(y, x0 + 2, view.empty_message(self.app), "muted")
+            self.put(y, x0 + 2, view.empty_message(self.app), "muted", max(0, x1 - x0 - 2))
             return
         view.cursor = max(0, min(view.cursor, len(rows) - 1))
         if view.cursor < view.scroll:
@@ -440,6 +488,104 @@ class Tui:
         for i in range(view.scroll, min(len(rows), view.scroll + visible)):
             self._draw_row(y, x0, x1, rows[i], i == view.cursor, widths, view.columns, current)
             y += 1
+
+    def draw_now_view(self, view: View, rows: list[Row], y: int, bottom: int, x0: int, x1: int) -> None:
+        player = self.app.player
+        track = player.current
+        if track is None:
+            self.put(y, x0 + 2, "Nothing playing. Pick an album, artist or track and press Enter.", "muted")
+            return
+        avail = bottom - y + 1
+        spectrum = self.app.settings.visualizer == "spectrum"
+        spec_h = max(3, min(12, avail // 3)) if spectrum and avail >= 10 else 0
+        top_h = avail - (spec_h + 1 if spec_h else 0)
+
+        album = self.app.library.album(track.album_id)
+        text_x = x0 + 2
+        box = self._art_box(album, top_h, x1 - x0, max_rows=16)
+        if box:
+            art_rows, art_cols = box
+            self._draw_art(album, y, x0 + 2, art_cols, art_rows, SLOT_VIEW)
+            text_x = x0 + 2 + art_cols + 3
+        width = x1 - text_x
+        line = y
+        self.put(line, text_x, track.title, "bold", width)
+        self.put(line + 1, text_x, track.artist, "secondary", width)
+        year = album.year if album and album.year else track.year
+        self.put(line + 2, text_x, track.album + (f"  {self.sym['dot']}  {year}" if year else ""),
+                 "secondary", width)
+        q = player.queue
+        info = f"Track {q.index + 1} of {len(q)}  {self.sym['dot']}  " \
+               f"{format_duration(player.position)} / {format_duration(player.duration)}"
+        self.put(line + 4, text_x, info, "muted", width)
+        list_top = line + 6
+        if list_top <= y + top_h - 2:
+            self._draw_list(view, rows, list_top, y + top_h - 1, text_x - 2, x1)
+        if spec_h:
+            self._big_spectrum = True
+            draw_spectrum(self.put_attr, self.pal.rgb, self.app.theme.colors, self.spectrum,
+                          y + top_h + 1, x0 + 2, x1 - x0 - 2, spec_h,
+                          self.app.settings.spectrum_style, self.app.settings.spectrum_peaks,
+                          ascii_only=self.sym is ASCII_SYMBOLS)
+
+    # -- Artwork ---------------------------------------------------------------------------
+
+    def _art_box(self, album, avail_rows: int, avail_cols: int, max_rows: int) -> tuple[int, int] | None:
+        """(rows, cols) for a square cover in the space, or None if it shouldn't be shown."""
+        if not (self.graphics or self.art_blocks) or album is None or not album.cover_art:
+            return None
+        cover = album.cover_art
+        if cover in self.app.artwork and self.app.artwork[cover] is None:
+            return None  # could not be decoded
+        rows = min(max_rows, avail_rows)
+        cols = rows * 2  # terminal cells are about twice as tall as wide
+        if rows < 4 or avail_cols - cols < 40:
+            return None
+        return rows, cols
+
+    def _draw_image(self, artwork, slot: int, y: int, x: int, cols: int, rows: int) -> None:
+        """Real image: placeholder characters whose foreground color names the image."""
+        h, w = self.scr.getmaxyx()
+        cols, rows = min(cols, graphics.MAX_CELLS), min(rows, graphics.MAX_CELLS)
+        if x + cols > w or y + rows > h:
+            return
+        image_id = self.graphics.image(artwork.cover_id, artwork.png, slot, cols, rows)
+        attr = self.pal.fixed(image_id)
+        for r, line in enumerate(self.graphics.placeholder_lines(cols, rows)):
+            try:
+                self.scr.addstr(y + r, x, line, attr)
+            except curses.error:
+                pass
+
+    def _draw_art(self, album, y: int, x: int, cols: int, rows: int, slot: int) -> None:
+        artwork = self.app.album_artwork(album)
+        if artwork is None:  # still loading: a quiet placeholder square
+            for r in range(rows):
+                self.put(y + r, x, " " * cols, "selection_dim")
+            return
+        if self.graphics:
+            self._draw_image(artwork, slot, y, x, cols, rows)
+            return
+        key = (artwork.cover_id, cols, rows)
+        runs = self._block_cache.get(key)
+        if runs is None:
+            # Precompute runs of equal color per row: one addstr per run, not per cell.
+            runs = []
+            for cells in block_rows(artwork.downscale(cols, rows * 2)):
+                line: list[list] = []
+                for c, (top, bottom) in enumerate(cells):
+                    attr = self.pal.rgb(top, bottom)
+                    if line and line[-1][2] == attr:
+                        line[-1][1] += "▀"
+                    else:
+                        line.append([c, "▀", attr])
+                runs.append(line)
+            if len(self._block_cache) > 8:
+                self._block_cache.clear()
+            self._block_cache[key] = runs
+        for r, line in enumerate(runs):
+            for offset, text, attr in line:
+                self.put_attr(y + r, x + offset, text, attr)
 
     def _draw_row(self, y: int, x0: int, x1: int, row: Row, selected: bool, widths: list[int],
                   columns, current) -> None:
@@ -475,7 +621,8 @@ class Tui:
         player = self.app.player
         track = player.current
         status = player.status
-        width = x1 - x0
+        settings = self.app.settings
+        in_now_view = isinstance(self.view, NowPlayingView) and self._big_spectrum
         icon, icon_role = {
             Status.PLAYING: (self.sym["playing"], "accent"),
             Status.PAUSED: (self.sym["paused"], "accent_plain"),
@@ -500,12 +647,34 @@ class Tui:
             self._draw_progress(y + height - 1, x0, x1, None, None)
             return
 
+        # Mini spectrum on the right (the Now Playing view has a large one instead).
+        mini_spectrum = settings.visualizer == "spectrum" and not in_now_view and height >= 3 \
+            and x1 - x0 >= 90
+        if mini_spectrum:
+            spec_w = min(settings.spectrum_bands * 2 - 1, 47)
+            draw_spectrum(self.put_attr, self.pal.rgb, self.app.theme.colors, self.spectrum,
+                          y, x1 - spec_w, spec_w, height, settings.spectrum_style,
+                          settings.spectrum_peaks, ascii_only=self.sym is ASCII_SYMBOLS)
+            x1 -= spec_w + 3
+        # Cover thumbnail where real images are available.
+        if self.graphics and height >= 3 and not isinstance(self.view, NowPlayingView):
+            album = self.app.library.album(track.album_id)
+            artwork = self.app.album_artwork(album) if album else None
+            if artwork:
+                self._draw_image(artwork, SLOT_PANEL, y, x0, 6, 3)
+                x0 += 8
+        width = x1 - x0
+
         self.put(y, x0, icon, icon_role)
         title_w = width - 2 - tx.width(right) - 2
         self.put(y, x0 + 2, track.title, "bold", max(0, title_w))
         self.put(y, x1 - tx.width(right), right, "muted")
         if height >= 3:
-            meter_w = self._meter_width()
+            # The level meter stands in for the spectrum when there's no room for it.
+            show_meter = (settings.visualizer == "meter" or
+                          (settings.visualizer == "spectrum" and not in_now_view and not mini_spectrum)) \
+                and len(self.meter.bars) == 2 and width > 60
+            meter_w = 2 * METER_CELLS + 1 if show_meter else 0
             upcoming = player.queue.upcoming(1)
             nxt = f"next {self.sym['dot']} {upcoming[0].title}" if upcoming else ""
             detail = f"{track.artist} — {track.album}" if track.album else track.artist
@@ -513,8 +682,9 @@ class Tui:
             x = self.put(y + 1, x0 + 2, tx.truncate(detail, width - 2 - reserved), "secondary")
             if nxt and x + 4 + tx.width(nxt) < x1 - reserved:
                 self.put(y + 1, x + 4, nxt, "muted")
-            if meter_w and width > 50:
-                self._draw_meter(y + 1, x1 - meter_w)
+            if meter_w:
+                draw_meter(self.put_attr, self.pal.rgb, self.app.theme.colors, self.meter.bars,
+                           y + 1, x1 - meter_w, METER_CELLS, ascii_only=self.sym is ASCII_SYMBOLS)
         else:
             detail = f"  {track.artist}"
             used = 2 + tx.width(track.title)
@@ -535,24 +705,6 @@ class Tui:
         self.put(y, x0 + 2, self.sym["bar"] * filled, "progress")
         self.put(y, x0 + 2 + filled, self.sym["bar_empty"] * (bar_w - filled), "progress_empty")
         self.put(y, x1 - tx.width(times), times, "secondary")
-
-    METER_CELLS = 10
-
-    def _meter_width(self) -> int:
-        n = len(self.levels)
-        return n * (self.METER_CELLS + 1) - 1 if n else 0
-
-    def _draw_meter(self, y: int, x: int) -> None:
-        steps = self.sym["meter"]
-        for level in self.levels:
-            cells = level * self.METER_CELLS
-            full = int(cells)
-            partial = int((cells - full) * (len(steps) - 1))
-            bar = steps[-1] * full + (steps[partial] if full < self.METER_CELLS else "")
-            bar = bar[:self.METER_CELLS]
-            self.put(y, x, bar, "progress")
-            self.put(y, x + len(bar), steps[-1] * (self.METER_CELLS - len(bar)), "progress_empty")
-            x += self.METER_CELLS + 1
 
     def draw_status(self, y: int, x0: int, x1: int) -> None:
         notice = self.app.current_notice()
@@ -576,8 +728,8 @@ class Tui:
         else:
             k = self.keymap.label
             sections = [k(a) for a in SECTIONS]
-            if sections == ["1", "2", "3", "4"]:
-                section_keys = "1-4"
+            if sections == [str(n) for n in range(1, len(SECTIONS) + 1)]:
+                section_keys = f"1-{len(SECTIONS)}"
             else:
                 section_keys = " ".join(sections)
             def pair(a: str, b: str, joiner: str = "/") -> str:

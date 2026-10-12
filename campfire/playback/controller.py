@@ -26,8 +26,10 @@ class Backend(Protocol):
     def seek(self, seconds: float, absolute: bool = False) -> None: ...
     def stop(self) -> None: ...
     def set_volume(self, volume: int) -> None: ...
-    def levels(self) -> list[float] | None: ...
+    def analysis(self): ...
     def shutdown(self) -> None: ...
+    visualizer: bool
+    def disable_visualizer(self) -> None: ...
 
 
 class Status(Enum):
@@ -150,8 +152,9 @@ class PlaybackController:
         if self.backend.running:
             self._backend_call(self.backend.set_volume, self.volume)
 
-    def levels(self) -> list[float] | None:
-        return self.backend.levels() if self.status == Status.PLAYING else None
+    def analysis(self):
+        """Spectrum/level measurements while playing (see mpv.Analysis), else None."""
+        return self.backend.analysis() if self.status == Status.PLAYING else None
 
     def shutdown(self) -> None:
         self.backend.shutdown()
@@ -239,6 +242,13 @@ class PlaybackController:
             self._failures = 0
             self._advance_or_finish()
         elif reason == "error":
+            if self.backend.visualizer and self.current is not None:
+                # The analysis filter can make mpv reject a file (e.g. an unusual
+                # channel layout). Playback matters more: drop it and retry.
+                self.backend.disable_visualizer()
+                self.notify("warning", "The visualizer could not process this track and was turned off.")
+                self._start(self.current)
+                return
             self._failures += 1
             title = self.current.title if self.current else "track"
             detail = msg.get("file_error") or "unknown error"

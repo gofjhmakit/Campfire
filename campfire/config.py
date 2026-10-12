@@ -38,7 +38,11 @@ def runtime_dir() -> Path:
 class Settings:
     # [ui]
     theme: str = "theme_default.toml"
-    visualizer: bool = True
+    visualizer: str = "spectrum"      # "spectrum" | "meter" | "off"
+    spectrum_bands: int = 16
+    spectrum_style: str = "bars"      # "bars" | "segments"
+    spectrum_peaks: bool = True
+    album_art: str = "auto"           # "auto" | "graphics" | "blocks" | "off"
     # [playback]
     seek_seconds: int = 10
     volume: int = 80
@@ -55,7 +59,8 @@ class Settings:
 
 # Which section of config.toml each setting lives in.
 SECTIONS: dict[str, tuple[str, ...]] = {
-    "ui": ("theme", "visualizer"),
+    "ui": ("theme", "visualizer", "spectrum_bands", "spectrum_style", "spectrum_peaks",
+           "album_art"),
     "playback": ("seek_seconds", "volume", "previous_restart_seconds", "mpv_path",
                  "mpv_user_config"),
     "library": ("cache_max_age_hours",),
@@ -69,8 +74,19 @@ DEFAULT_CONFIG = """\
 # Theme file name. Looked up in the user themes directory first
 # ({themes_dir}), then in the built-in themes.
 theme = "theme_default.toml"
-# Show the audio level meter in the Now Playing panel.
-visualizer = true
+# Visualizer, measured from the decoded audio: "spectrum" (frequency bars),
+# "meter" (stereo level meter) or "off".
+visualizer = "spectrum"
+# Number of spectrum bands, 8-32.
+spectrum_bands = 16
+# "bars" (smooth) or "segments" (LED blocks).
+spectrum_style = "bars"
+# Falling peak markers above the bars.
+spectrum_peaks = true
+# Album artwork (needs the ffmpeg command-line tool): "auto" uses real images
+# in kitty and Ghostty and colored text blocks elsewhere; or "graphics",
+# "blocks", "off".
+album_art = "auto"
 
 [playback]
 # Seconds to jump with the left and right arrow keys.
@@ -104,11 +120,18 @@ url = "{server_url}"
 # next = "n"                previous = "p"           stop = "s"
 # volume_up = ["+", "="]    volume_down = "-"        goto_playing = "."
 # artists = "1"             albums = "2"             tracks = "3"
-# queue = "4"               search = "/"             refresh = "r"
-# help = "?"                quit = "q"
+# queue = "4"               now_playing = "5"        search = "/"
+# refresh = "r"             help = "?"               quit = "q"
 # move_up = "k"             move_down = "j"          top = "g"
 # bottom = "G"              back = "h"
 """
+
+
+CHOICES = {
+    "visualizer": ("spectrum", "meter", "off"),
+    "spectrum_style": ("bars", "segments"),
+    "album_art": ("auto", "graphics", "blocks", "off"),
+}
 
 
 def config_path() -> Path:
@@ -170,7 +193,11 @@ def load_settings(path: Path | None = None, create: bool = True) -> tuple[Settin
             if name not in keys:
                 warnings.append(f"Unknown setting {section}.{key} ignored.")
                 continue
+            if name == "visualizer" and isinstance(value, bool):  # pre-0.2 config files
+                value = "spectrum" if value else "off"
             coerced = _coerce(value, types[name])
+            if name in CHOICES and coerced not in CHOICES[name]:
+                coerced = None
             if coerced is None:
                 warnings.append(f"Invalid value for {section}.{key}: {value!r}; using default.")
                 continue
@@ -223,6 +250,9 @@ def _clamp(s: Settings) -> list[str]:
         s.seek_seconds = 10
     if s.previous_restart_seconds < 0:
         s.previous_restart_seconds = 0.0
+    if not 8 <= s.spectrum_bands <= 32:
+        warnings.append("ui.spectrum_bands must be 8-32; clamped.")
+        s.spectrum_bands = max(8, min(32, s.spectrum_bands))
     if s.cache_max_age_hours < 0:
         s.cache_max_age_hours = 0.0
     if not is_safe_server_url(s.server_url):

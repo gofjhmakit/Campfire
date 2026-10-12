@@ -12,6 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from . import art
 from .cache import Cache
 from .config import Settings, cache_dir, runtime_dir
 from .credentials import Credentials
@@ -112,8 +113,14 @@ class App:
         self._album_requests: set[str] = set()
         self.notices: list[Notice] = []
         self.backend = MpvBackend(self.bus, runtime_dir(), settings.mpv_path,
-                                  settings.volume, settings.visualizer,
-                                  user_config=settings.mpv_user_config)
+                                  settings.volume, visualizer=settings.visualizer != "off",
+                                  user_config=settings.mpv_user_config,
+                                  bands=settings.spectrum_bands)
+        self.art_cache = art.ArtCache(cache_dir() / "art")
+        self.artwork: dict[str, art.Artwork | None] = {}  # None: unavailable
+        self._art_requests: set[str] = set()
+        self._art_retry_after: dict[str, float] = {}
+        self.art_enabled = settings.album_art != "off" and art.ffmpeg_path() is not None
         self.player = PlaybackController(
             self.backend, lambda track: self.client.stream_url(track.id), self.notify,
             seek_seconds=settings.seek_seconds,
@@ -127,6 +134,8 @@ class App:
         return MpvBackend.find(self.settings.mpv_path) is not None
 
     def start(self) -> None:
+        if self.settings.album_art != "off" and not self.art_enabled:
+            self.notify("info", "Album art needs the ffmpeg command-line tool, which was not found.")
         if not self.mpv_available:
             self.notify("error", f"mpv not found ('{self.settings.mpv_path}'): playback is unavailable. "
                                  "Install it with `brew install mpv` or `sudo apt install mpv`.")
@@ -201,6 +210,31 @@ class App:
                 self.bus.put(("album-error", album_id, exc))
         threading.Thread(target=worker, name="album-fetch", daemon=True).start()
 
+    def album_artwork(self, album: Album | None) -> art.Artwork | None:
+        """Decoded artwork if available; otherwise starts loading it in the background."""
+        if not self.art_enabled or album is None or not album.cover_art:
+            return None
+        cover = album.cover_art
+        if cover in self.artwork:
+            return self.artwork[cover]
+        if cover not in self._art_requests and time.monotonic() >= self._art_retry_after.get(cover, 0):
+            self._art_requests.add(cover)
+            threading.Thread(target=self._art_worker, args=(cover,), name="art", daemon=True).start()
+        return None
+
+    def _art_worker(self, cover: str) -> None:
+        data = self.art_cache.get(cover)
+        try:
+            if data is None:
+                data = self.client.cover_art(cover)
+                self.art_cache.put(cover, data)
+            self.bus.put(("art", cover, art.decode(cover, data)))
+        except art.ArtError:
+            self.art_cache.discard(cover)  # never keep a file that does not decode
+            self.bus.put(("art", cover, None))
+        except SubsonicError:
+            self.bus.put(("art-retry", cover))
+
     # -- Event processing ---------------------------------------------------------------
 
     def process_events(self) -> bool:
@@ -222,6 +256,15 @@ class App:
                 _, album_id, exc = event
                 self._album_requests.discard(album_id)
                 self.notify("error", f"Could not load album: {exc}")
+            elif kind == "art":
+                _, cover, artwork = event
+                self._art_requests.discard(cover)
+                self.artwork[cover] = artwork
+                while len(self.artwork) > 64:  # bounded memory
+                    del self.artwork[next(iter(self.artwork))]
+            elif kind == "art-retry":
+                self._art_requests.discard(event[1])  # network trouble: try again later
+                self._art_retry_after[event[1]] = time.monotonic() + 30
             elif kind == "sync-done":
                 self._finish_sync(event[1])
             elif kind == "sync-error":

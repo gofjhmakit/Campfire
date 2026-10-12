@@ -23,6 +23,7 @@ from .models import Album, Track, parse_album, parse_items, parse_track, sort_al
 
 API_VERSION = "1.16.1"
 MAX_RESPONSE_BYTES = 64 * 1024 * 1024  # a whole-collection listing is far smaller
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 USER_AGENT = f"Campfire/{__version__}"
 
 
@@ -175,6 +176,25 @@ class SubsonicClient:
         album = parse_album(data)
         tracks = sort_album_tracks(parse_items(data.get("song"), parse_track, album))
         return album, tracks
+
+    def cover_art(self, cover_id: str, size: int | None = None) -> bytes:
+        """Album artwork (Bandcamp serves JPEG). Raises SubsonicError."""
+        request = urllib.request.Request(self.url("getCoverArt", id=cover_id, size=size),
+                                         headers={"User-Agent": USER_AGENT})
+        try:
+            with self._opener.open(request, timeout=self.timeout) as response:
+                content_type = response.headers.get("Content-Type", "")
+                data = response.read(MAX_IMAGE_BYTES + 1)
+        except urllib.error.HTTPError as exc:
+            raise self._http_error("getCoverArt", exc) from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            raise NetworkError(f"Could not reach Bandcamp ({getattr(exc, 'reason', exc)}).") from None
+        if len(data) > MAX_IMAGE_BYTES:
+            raise SubsonicError("Cover art is too large.")
+        if not content_type.startswith("image/"):
+            self._parse("getCoverArt", data)  # a Subsonic error envelope: raises
+            raise SubsonicError("Bandcamp did not return an image for the cover art.")
+        return data
 
     def search(self, query: str, artist_count: int = 20, album_count: int = 20,
                song_count: int = 50) -> dict:

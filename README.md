@@ -4,30 +4,17 @@ A terminal music player for your own Bandcamp collection. It uses Bandcamp's
 official [Subsonic API](https://blog.bandcamp.com/2026/07/16/discover-improvements-and-subsonic-implementation/)
 (open beta) and plays audio through [mpv](https://mpv.io).
 
-```
-  CAMPFIRE  Albums › Dummy Album One                                  / search  ? help
-
-  LIBRARY           Dummy Album One  Test Artist · 2019 · 4 tracks                 3/5
-    1: Artists
-  ▶ 2: Albums           #  TITLE                                              TIME
-    3: Tracks       ▶      Play album                                            00:24
-                        1  Tone number 1                                         00:06
-  PLAYBACK          ▶   2  Tone number 2                                         00:06
-    4: Queue            3  Tone number 3                                         00:06
-
-  ────────────────────────────────────────────────────────────────────────────────────
-  ▶ Tone number 2                                                              vol 80%
-    Test Artist — Dummy Album One    next · Tone number 3        █████████  ████████▌
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  00:01 / 00:06
-  space play/pause   ←→ seek   n/p next/prev   1-4 sections   / search   ? help   q quit
-```
+![Campfire playing an album in Ghostty inside tmux: track list, cover art, Now Playing panel and spectrum analyzer](app.png)
 
 * Browse your collection by artist, album or track. Search all three instantly.
 * Play an album in order, start anywhere within it, or play everything by an artist.
 * The playback queue auto-advances and skips tracks that can't be played.
 * Black-and-orange default theme, plus file-based TOML themes.
 * Library metadata is cached locally (SQLite) for instant startup.
-* Real stereo level meter, measured from the decoded audio by mpv/ffmpeg.
+* Winamp-style spectrum analyzer (or a stereo level meter), measured from the
+  decoded audio, with colors you can theme.
+* Album art: real images in kitty and Ghostty, colored text blocks in other
+  terminals.
 * No Python dependencies beyond the standard library.
 
 ## Requirements
@@ -37,6 +24,7 @@ official [Subsonic API](https://blog.bandcamp.com/2026/07/16/discover-improvemen
 | OS | macOS or Linux |
 | Python | 3.11 or newer (stdlib only; `curses` must be available, which it is on standard macOS/Linux builds) |
 | mpv | Required for playback (tested with 0.41). The app still starts and browses without it. |
+| ffmpeg | Optional, for album art: the `ffmpeg` command-line tool decodes the images. Homebrew's mpv installs it; on Debian/Ubuntu run `sudo apt install ffmpeg`. Without it, no art is shown. |
 | Terminal | Any modern terminal. 256 colors recommended; 8 colors and monochrome work. Minimum 40×10. |
 
 Install mpv:
@@ -126,7 +114,7 @@ Press `?` in the app for this list. These are the defaults; see
 | `PgUp` `PgDn`, `g` `G`, `Home` `End` | Page, top / bottom |
 | `Enter` | Open, or play from the selected track |
 | `Esc` / `Backspace` / `h` | Back |
-| `1` `2` `3` `4` | Artists, Albums, Tracks, Queue |
+| `1` `2` `3` `4` `5` | Artists, Albums, Tracks, Queue, Now Playing |
 | `/` | Search |
 | `r` | Refresh the library from Bandcamp |
 | `q`, `Ctrl+C` | Quit |
@@ -146,7 +134,7 @@ What `Enter` does:
 * **Track in the Tracks list or search:** a search result opens its album with
   the track selected; in the Tracks list it plays that track and the rest of
   its album.
-* **Queue entry:** jumps to that entry.
+* **Queue entry, or Up Next in Now Playing:** jumps to that track.
 
 ## Configuration
 
@@ -163,7 +151,11 @@ A commented `config.toml` is created on first run:
 ```toml
 [ui]
 theme = "theme_default.toml"     # file in the themes dir, or a built-in theme
-visualizer = true                # level meter in Now Playing
+visualizer = "spectrum"          # "spectrum", "meter" or "off"
+spectrum_bands = 16              # 8-32
+spectrum_style = "bars"          # "bars" or "segments" (LED blocks)
+spectrum_peaks = true            # falling peak markers
+album_art = "auto"               # "auto", "graphics", "blocks" or "off"
 
 [playback]
 seek_seconds = 10
@@ -181,6 +173,54 @@ url = "https://bandcamp.com/api/subsonic"
 
 Invalid values are reported in the status line and replaced by defaults. A
 broken file never stops the app from starting.
+
+## Now Playing, album art and visualizer
+
+![The Now Playing view: large cover, track details, up-next list and a large spectrum analyzer](app2.png)
+
+Press `5` for the Now Playing view: a large cover, the track details, the
+upcoming tracks (selectable with `Enter`), and a large spectrum analyzer.
+Album views show the cover next to the track list. The bottom panel shows a
+small spectrum when the terminal is at least 90 columns wide, and the stereo
+level meter otherwise.
+
+* **Album art** (`ui.album_art`):
+  * `auto` sends real images to terminals with the kitty graphics protocol
+    (kitty, Ghostty) and draws colored half-block characters elsewhere.
+  * Inside tmux, real images need one tmux setting; see
+    [Using tmux](#using-tmux).
+  * `graphics` and `blocks` force one method; `off` disables art.
+  * Art needs `ffmpeg`. Covers are cached in the cache directory.
+* **Visualizer** (`ui.visualizer`):
+  * The bars are real measurements. mpv splits the audio into 8–32 frequency
+    bands (40 Hz–16 kHz, log-spaced) with ffmpeg band-pass filters and
+    reports each band's level; Campfire adds Winamp-style falloff and peak
+    markers.
+  * `ui.spectrum_style = "segments"` gives LED-style blocks.
+  * The colors come from the theme's `spectrum_*` entries.
+  * It uses a few percent of one CPU core and nothing while paused.
+
+## Using tmux
+
+Campfire works in tmux as is. For **sharp album art** inside tmux (tmux 3.3 or
+newer, running in kitty or Ghostty), allow tmux to pass the image data through
+to the terminal:
+
+```sh
+# enable it now, and for future tmux sessions
+tmux set -g allow-passthrough on
+echo 'set -g allow-passthrough on' >> ~/.tmux.conf
+```
+
+Then restart Campfire. Without this setting, covers are drawn as colored text
+blocks, and Campfire shows a one-time hint.
+
+Passthrough lets any program in a tmux pane send escape sequences directly to
+the outer terminal, not just Campfire (see [docs/security.md](docs/security.md)).
+If you'd rather not enable it, set `ui.album_art = "blocks"` to keep text art
+without the hint.
+
+The screenshot above is Ghostty 1.3 inside tmux 3.7 with passthrough enabled.
 
 ## Custom key bindings
 
@@ -206,11 +246,12 @@ The actions and their defaults:
 | `seek_back` | `left` | | `albums` | `2` |
 | `seek_forward` | `right` | | `tracks` | `3` |
 | `next` | `n` | | `queue` | `4` |
-| `previous` | `p` | | `search` | `/` |
-| `stop` | `s` | | `refresh` | `r` |
+| `previous` | `p` | | `now_playing` | `5` |
+| `stop` | `s` | | `search` | `/` |
+| `goto_playing` | `.` | | `refresh` | `r` |
 | `volume_up` | `+`, `=` | | `help` | `?` |
 | `volume_down` | `-` | | `quit` | `q` |
-| `goto_playing` | `.` | | `move_up` / `move_down` | `k` / `j` |
+| | | | `move_up` / `move_down` | `k` / `j` |
 | `top` / `bottom` | `g` / `G` | | `back` | `h` |
 
 The arrow keys `↑` `↓`, Page Up/Down, Home/End, Enter, Esc and Backspace always
@@ -228,8 +269,9 @@ bindings don't fire while you type.
 
 ## Themes
 
-Built-in themes are `theme_default.toml` (black and orange) and
-`theme_dracula.toml`. To make your own, put a file in
+Built-in themes are `theme_default.toml` (black and orange),
+`theme_dracula.toml` and `theme_winamp.toml` (Winamp 2 classic: green text,
+green-yellow-red spectrum). To make your own, put a file in
 `~/.config/campfire/themes/` and select it with `ui.theme`:
 
 ```toml
@@ -249,6 +291,10 @@ progress_empty = "#303030"
 border         = "#262626"
 error          = "#ff5f5f"
 warning        = "#ffd75f"
+spectrum_low   = "#af3a00"   # spectrum gradient, bottom ...
+spectrum_mid   = "#ff8700"
+spectrum_high  = "#ffd787"   # ... to top
+spectrum_peak  = "#ffffff"   # falling peak markers
 ```
 
 Any color you leave out is taken from the default theme. Colors are mapped to
@@ -317,9 +363,16 @@ These are not automated:
   tested and will take longer. Bandcamp itself warns the beta can be slow with big collections.
 * Streams are whatever Bandcamp's Subsonic `stream` endpoint serves (MP3 from
   Bandcamp's CDN). There is no offline download.
-* Playlists, artwork, scrobbling and gapless playback are not implemented.
+* Playlists, scrobbling and gapless playback are not implemented.
 * Artists are grouped by name, so two different artists with the same name
   are shown together.
-* The level meter needs mpv built with libavfilter (standard builds have it).
-  It is a level meter, not a spectrum analyzer.
+* The visualizer needs mpv built with libavfilter (standard builds have it). If
+  its filter ever can't process a track, Campfire turns the visualizer off
+  and plays the track anyway. It runs slightly ahead of what you hear (by the
+  audio output buffer). There is no oscilloscope mode, because mpv doesn't
+  expose raw samples.
+* Text-block album art is coarse: 2 pixels per character cell, 256 colors.
+  Real images need the kitty graphics protocol with Unicode placeholders
+  (kitty, Ghostty). In tmux they also need `allow-passthrough on`; GNU screen
+  is not supported.
 * Windows is not supported (curses, Unix sockets).

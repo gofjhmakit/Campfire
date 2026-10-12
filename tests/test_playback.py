@@ -10,8 +10,9 @@ from .helpers import album, tracks
 class FakeBackend:
     """Records commands; tests feed mpv-style events to the controller."""
 
-    def __init__(self, fail_start: bool = False):
+    def __init__(self, fail_start: bool = False, visualizer: bool = False):
         self.running = False
+        self.visualizer = visualizer
         self.fail_start = fail_start
         self.calls = []
         self.entry = 0
@@ -36,8 +37,12 @@ class FakeBackend:
     def set_volume(self, volume):
         self.calls.append(("volume", volume))
 
-    def levels(self):
-        return [-20.0, -21.0]
+    def analysis(self):
+        return "analysis"
+
+    def disable_visualizer(self):
+        self.visualizer = False
+        self.calls.append(("disable_visualizer",))
 
     def shutdown(self):
         self.running = False
@@ -236,11 +241,25 @@ class ControllerTests(unittest.TestCase):
         self.event(event="property-change", name="duration", data=None)
         self.assertEqual(self.c.duration, 200.5)
 
-    def test_levels_only_while_playing(self):
-        self.assertIsNone(self.c.levels())
+    def test_analysis_only_while_playing(self):
+        self.assertIsNone(self.c.analysis())
         self.c.play(TRACKS)
         self.start_playing()
-        self.assertEqual(self.c.levels(), [-20.0, -21.0])
+        self.assertEqual(self.c.analysis(), "analysis")
+
+    def test_failure_with_visualizer_disables_it_and_retries_same_track(self):
+        self.backend.visualizer = True
+        self.c.play(TRACKS)
+        self.event(event="start-file", playlist_entry_id=1)
+        self.event(event="end-file", reason="error", playlist_entry_id=1, file_error="no audio")
+        self.assertIn(("disable_visualizer",), self.backend.calls)
+        self.assertEqual(self.loads(), [f"url:{TRACKS[0].id}"] * 2)   # same track retried
+        self.assertEqual(self.c.current, TRACKS[0])
+        self.assertIn("visualizer", self.notices[-1][1])
+        # A second failure is a real playback error and advances as usual.
+        self.event(event="start-file", playlist_entry_id=2)
+        self.event(event="end-file", reason="error", playlist_entry_id=2, file_error="no audio")
+        self.assertEqual(self.c.current, TRACKS[1])
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ ACTIONS: dict[str, tuple[list[str], str]] = {
     "albums": (["2"], "Albums"),
     "tracks": (["3"], "Tracks"),
     "queue": (["4"], "Queue"),
+    "now_playing": (["5"], "Now Playing"),
     "search": (["/"], "Search"),
     "refresh": (["r"], "Refresh library"),
     "help": (["?"], "This help"),

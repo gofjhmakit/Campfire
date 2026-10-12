@@ -17,11 +17,45 @@ import socket
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-# Real level metering: mpv's lavfi bridge runs ffmpeg's astats filter on the
-# decoded audio and exposes the measurements as the `af-metadata/viz` property.
-VIZ_FILTER = "@viz:lavfi=[astats=metadata=1:reset=1:measure_overall=none]"
+SPECTRUM_LOW_HZ, SPECTRUM_HIGH_HZ = 40, 16000
+BAND_Q = 2.5
+
+
+def band_frequencies(bands: int) -> list[int]:
+    """Log-spaced band centre frequencies."""
+    ratio = SPECTRUM_HIGH_HZ / SPECTRUM_LOW_HZ
+    return [round(SPECTRUM_LOW_HZ * ratio ** (i / (bands - 1))) for i in range(bands)]
+
+
+def analysis_filter(bands: int) -> str:
+    """mpv audio filter that measures the audio without changing it.
+
+    mpv exposes no audio samples, only filter metadata (`af-metadata/<label>`).
+    The graph splits a mono mix into band-pass filtered copies, merges them
+    with the untouched stereo signal into one multi-channel stream, measures
+    the RMS level of every channel with ffmpeg's astats filter (the metadata is
+    attached to the frames), and pans back to the original stereo channels.
+    Channels 1..bands are the spectrum; bands+1 and bands+2 the stereo levels.
+    (amerge drops frame metadata, so astats has to run after merging.)
+    """
+    filters = ";".join(f"[b{i}]bandpass=f={f}:width_type=q:w={BAND_Q}[o{i}]"
+                       for i, f in enumerate(band_frequencies(bands)))
+    graph = ("aformat=channel_layouts=stereo,asplit=2[main][ana];"
+             f"[ana]pan=mono|c0=0.5*c0+0.5*c1,asplit={bands}" + "".join(f"[b{i}]" for i in range(bands))
+             + f";{filters};" + "".join(f"[o{i}]" for i in range(bands))
+             + f"[main]amerge=inputs={bands + 1},asetnsamples=n=2048,"
+             "astats=metadata=1:reset=1:measure_overall=none:measure_perchannel=RMS_level,"
+             f"pan=stereo|c0=c{bands}|c1=c{bands + 1}")
+    return f"@viz:lavfi=[{graph}]"
+
+
+@dataclass(frozen=True)
+class Analysis:
+    levels: list[float]  # stereo RMS, dBFS
+    bands: list[float]   # spectrum band RMS, dBFS, low to high frequency
 
 # The stream URLs carry Subsonic auth parameters (u/t/s), which can be replayed
 # against the API. These options are always forced on mpv's command line (which
@@ -45,12 +79,14 @@ class MpvBackend:
     """Owns the mpv process. Events are delivered as ("mpv", dict) on `events`."""
 
     def __init__(self, events: queue.Queue, socket_dir: Path, mpv_path: str = "mpv",
-                 volume: int = 80, visualizer: bool = True, user_config: bool = False):
+                 volume: int = 80, visualizer: bool = True, user_config: bool = False,
+                 bands: int = 16):
         self.events = events
         self.socket_dir = socket_dir
         self.mpv_path = mpv_path
         self.initial_volume = volume
-        self.visualizer = visualizer
+        self.visualizer = visualizer  # set to False if the filter ever fails
+        self.bands = bands
         # mpv.conf and user scripts can read the current URL (and thus the auth
         # token), e.g. presence or scrobbling scripts, so they are off by default.
         self.user_config = user_config
@@ -103,7 +139,7 @@ class MpvBackend:
                  "--gapless-audio=no", f"--volume={self.initial_volume}",
                  f"--input-ipc-server={socket_path}"]
         if self.visualizer:
-            args.append(f"--af={VIZ_FILTER}")
+            args.append(f"--af={analysis_filter(self.bands)}")
         return args
 
     def _connect(self, path: Path) -> socket.socket:
@@ -242,23 +278,33 @@ class MpvBackend:
     def set_volume(self, volume: int) -> None:
         self.command("set_property", "volume", volume)
 
-    def levels(self) -> list[float] | None:
-        """Current per-channel RMS levels in dBFS, or None if unavailable."""
+    def disable_visualizer(self) -> None:
+        """Remove the analysis filter (used if it ever breaks playback)."""
+        self.visualizer = False
+        if self.running:
+            self.command("af", "remove", "@viz")
+
+    def analysis(self) -> Analysis | None:
+        """Latest measurements from the analysis filter, or None if unavailable."""
         if not self.visualizer or not self.running:
             return None
         try:
             data = self.request(["get_property", "af-metadata/viz"], timeout=0.2)
         except BackendError:
             return None
-        if not isinstance(data, dict):
+        return parse_analysis(data, self.bands)
+
+
+def parse_analysis(data: object, bands: int) -> Analysis | None:
+    if not isinstance(data, dict):
+        return None
+    values = []
+    for channel in range(1, bands + 3):
+        raw = data.get(f"lavfi.astats.{channel}.RMS_level")
+        if raw is None:
             return None
-        levels = []
-        for channel in (1, 2):
-            value = data.get(f"lavfi.astats.{channel}.RMS_level")
-            if value is None:
-                break
-            try:
-                levels.append(float(value))
-            except ValueError:
-                levels.append(float("-inf"))
-        return levels or None
+        try:
+            values.append(float(raw))
+        except ValueError:  # "-inf" for digital silence parses fine; anything else doesn't
+            values.append(float("-inf"))
+    return Analysis(levels=values[bands:], bands=values[:bands])

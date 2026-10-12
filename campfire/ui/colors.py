@@ -63,6 +63,9 @@ class Palette:
     def __init__(self, theme: Theme):
         self.attrs: dict[str, int] = {}
         self.colors = 0
+        self.theme = theme
+        self._pair_ids: dict[tuple[int, int], int] = {}
+        self._default_ok = False
         if curses.has_colors():
             curses.start_color()
             try:
@@ -71,6 +74,7 @@ class Palette:
             except curses.error:
                 default_ok = False
             self.colors = curses.COLORS
+            self._default_ok = default_ok
             self._init_pairs(theme, default_ok)
         else:
             self._monochrome()
@@ -83,7 +87,7 @@ class Palette:
         return rgb_to_8(color)
 
     def _init_pairs(self, theme: Theme, default_ok: bool) -> None:
-        pair_ids: dict[tuple[int, int], int] = {}
+        pair_ids = self._pair_ids
         for role, (fg_role, bg_role, extra) in self.PAIRS.items():
             fg = self._convert(theme.colors[fg_role], default_ok, curses.COLOR_WHITE)
             bg = self._convert(theme.colors[bg_role], default_ok, curses.COLOR_BLACK)
@@ -108,6 +112,34 @@ class Palette:
         self.attrs["selection_dim"] = curses.A_REVERSE
         self.attrs["current_selected"] = curses.A_REVERSE | curses.A_BOLD
         self.attrs["muted"] = curses.A_DIM
+
+    def fixed(self, fg_index: int) -> int:
+        """Attribute with an exact 256-color foreground index on the theme background."""
+        bg = self._convert(self.theme.colors["background"], self._default_ok, curses.COLOR_BLACK)
+        return self._pair(fg_index, bg)
+
+    def _pair(self, fg: int, bg: int) -> int:
+        key = (fg, bg)
+        pair_id = self._pair_ids.get(key)
+        if pair_id is None:
+            pair_id = len(self._pair_ids) + 1
+            if pair_id >= min(curses.COLOR_PAIRS, 32767):
+                return self.attrs.get("text", 0)  # out of pairs: degrade gracefully
+            try:
+                curses.init_pair(pair_id, fg, bg)
+            except (curses.error, ValueError, OverflowError):
+                return self.attrs.get("text", 0)
+            self._pair_ids[key] = pair_id
+        return curses.color_pair(pair_id)
+
+    def rgb(self, fg: Color, bg: Color | str = "background") -> int:
+        """Attribute for arbitrary colors (gradients, artwork); bg defaults to the theme's."""
+        if not self.colors:
+            return 0
+        if isinstance(bg, str):
+            bg = self.theme.colors[bg]
+        return self._pair(self._convert(fg, self._default_ok, curses.COLOR_WHITE),
+                          self._convert(bg, self._default_ok, curses.COLOR_BLACK))
 
     def __getitem__(self, role: str) -> int:
         return self.attrs.get(role, 0)
