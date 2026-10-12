@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Campfire logo: a campfire with a music note in the flame" width="160">
+</p>
+
 # Campfire
 
 A terminal music player for your own Bandcamp collection. It uses Bandcamp's
