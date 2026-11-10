@@ -1,6 +1,7 @@
 # Campfire – technical plan and research notes
 
-Status: October 2026. Items marked **(verified)** were tested directly; items
+Status: October 2026, re-verified against the live API on 2026-11-10 with no
+changes found (`campfire check`; still `serverVersion 1.0`, open beta). Items marked **(verified)** were tested directly; items
 marked **(reported)** come from third-party testing and have not yet been
 confirmed against a live account by this project.
 
@@ -25,8 +26,8 @@ There is no Bandcamp-specific reference documentation; the protocol reference is
 | Collection | `getAlbumList2` with `alphabeticalByName`, `newest`, `recent`, `random`, `frequent` works; `offset` is honoured **(verified)**. Campfire advances `offset` by the number of albums actually returned, stops on an empty page, and stops if a page repeats. |
 | Album metadata | `artist, coverArt, created, duration, genre, id, name, playCount, songCount` – **no `year`** **(verified)**. Campfire derives the album year from its tracks. `created` is an RFC 1123 date string, not ISO 8601. |
 | Tracks | `getAlbum` returns songs with `album, albumId, artist, artistId, bitRate, contentType, coverArt, created, duration, genre, id, parent, size, suffix, title, track, year` **(verified)**. |
-| IDs | Prefixed Bandcamp item IDs: albums `a:<number>`, tracks `t:<number>` **(verified)**. They are Bandcamp's own item IDs and are expected to be stable; long-term stability has not been observed. |
-| Other endpoints | `getArtists`, `getArtist`, `getIndexes`, `getSong`, `search3`, `getMusicFolders`, `getPlaylists`, `getOpenSubsonicExtensions` all respond **(verified)**. `search3` with an empty query returned at most 100 songs. |
+| IDs | Prefixed Bandcamp item IDs: albums `a:<number>`, tracks `t:<number>` **(verified)**. They are Bandcamp's own item IDs. Sampled IDs were unchanged between 2026-10-12 and 2026-11-10 **(verified)**. |
+| Other endpoints | `getArtists`, `getArtist`, `getIndexes`, `getSong`, `search3`, `getMusicFolders`, `getPlaylists`, `getOpenSubsonicExtensions` all respond **(verified)**; the extension list is empty (no `apiKeyAuthentication` etc.). `search3` with an empty query returned at most 100 songs. |
 | Streaming | `stream.view` answers `302` to `t4.bcbits.com` with time-limited `token`/`ts` query parameters. The CDN serves `audio/mpeg`, supports `Range` (`206 Partial Content`), so **seeking works** **(verified)**. Stream URLs therefore must not be cached, and Campfire never does. |
 | Performance | A small collection (under 20 albums) synced in about 2 seconds **(verified)**. Larger collections are untested. |
 
